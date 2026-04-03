@@ -1534,7 +1534,7 @@ async def process_broadcast(msg: Message, state: FSMContext):
         try:
             await bot.send_message(
                 user_id,
-                f'</b>\n\n{broadcast_text}',
+                broadcast_text,
                 parse_mode="HTML"
             )
             success_count += 1
