@@ -23,16 +23,21 @@ STARTING_BALANCE = 1000
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Пул соединений для оптимизации
-db_pool = pool.SimpleConnectionPool(1, 10, DATABASE_URL)
+db_pool = None
+
+def get_db_pool():
+    global db_pool
+    if db_pool is None:
+        db_pool = pool.SimpleConnectionPool(1, 10, DATABASE_URL)
+    return db_pool
 
 last_bets = {}  # {user_id: {'game': 'coin'/'roulette', 'choice'/'bet_type': ..., 'amount': ...}}
 
 def db_connect():
-    return db_pool.getconn()
+    return get_db_pool().getconn()
 
 def db_release(conn):
-    db_pool.putconn(conn)
+    get_db_pool().putconn(conn)
 
 def init_db():
     conn = db_connect()
@@ -83,6 +88,23 @@ def create_user(user_id: int, username: str):
                 (user_id, username, STARTING_BALANCE)
             )
         conn.commit()
+    finally:
+        db_release(conn)
+
+def get_or_create_user(user_id: int, username: str):
+    """Получить или создать пользователя, вернуть баланс (оптимизировано для /start)"""
+    conn = db_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO users (user_id, username, balance) VALUES (%s,%s,%s) 
+                   ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username
+                   RETURNING balance""",
+                (user_id, username, STARTING_BALANCE)
+            )
+            result = cur.fetchone()
+            conn.commit()
+            return result[0] if result else STARTING_BALANCE
     finally:
         db_release(conn)
 
@@ -542,8 +564,7 @@ def edit_user_kb(user_id: int):
 
 @dp.message(CommandStart())
 async def cmd_start(msg: Message, state: FSMContext):
-    create_user(msg.from_user.id, msg.from_user.username or "игрок")
-    bal = get_balance(msg.from_user.id)
+    bal = get_or_create_user(msg.from_user.id, msg.from_user.username or "игрок")
     await state.clear()
     text = (
         f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Добро пожаловать в Казино!</b>\n\n'
@@ -1551,9 +1572,10 @@ async def main():
     try:
         await dp.start_polling(bot)
     finally:
-        # Закрываем пул соединений при завершении
-        db_pool.closeall()
-        print("🗄️ Database connection pool closed")
+        global db_pool
+        if db_pool is not None:
+            db_pool.closeall()
+            print("🗄️ Database connection pool closed")
 
 if __name__ == "__main__":
     try:
