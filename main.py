@@ -251,7 +251,7 @@ def main_menu_kb():
             ),
         ],
         [InlineKeyboardButton(
-            text="Получить звезды ⭐",
+            text="Накормить автора",
             callback_data="donate",
             icon_custom_emoji_id="5904462880941545555"  # 💫
         )],
@@ -597,15 +597,11 @@ async def show_history(cq: CallbackQuery):
 
 @dp.callback_query(F.data == "donate")
 async def open_donate(cq: CallbackQuery):
-    """Открыть меню доната"""
+    """Открыть меню для поддержки автора"""
     text = (
-        '<tg-emoji emoji-id="5258882890059091157">💫</tg-emoji> <b>Получите звезды!</b>\n\n'
-        'Выберите количество звезд для пополнения баланса:\n'
-        '• 50 ⭐ → +100 монет\n'
-        '• 100 ⭐ → +250 монет\n'
-        '• 250 ⭐ → +700 монет\n'
-        '• 500 ⭐ → +1500 монет\n'
-        '• 1000 ⭐ → +3500 монет'
+        '<tg-emoji emoji-id="5258882890059091157">⭐</tg-emoji> <b>Накормить автора</b>\n\n'
+        'Выберите количество звезд для поддержки разработки\n'
+        '(звезды идут разработчику, спасибо! 💙)'
     )
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=donate_kb())
 
@@ -616,29 +612,14 @@ async def process_donation(cq: CallbackQuery):
     amount_str = cq.data.split("_")[1]
     amount = int(amount_str)
     
-    # Соответствие звезд к монетам
-    star_to_coins = {
-        50: 100,
-        100: 250,
-        250: 700,
-        500: 1500,
-        1000: 3500,
-    }
-    
-    coins = star_to_coins.get(amount, 0)
-    
-    if coins == 0:
-        await cq.answer("❌ Некорректная сумма", show_alert=True)
-        return
-    
     # Отправить инвойс для оплаты звездами
     await bot.send_invoice(
         chat_id=cq.from_user.id,
-        title="Пополнение баланса",
-        description=f"Получите {coins} монет за {amount} ⭐",
+        title="Поддержка разработчика",
+        description=f"Спасибо за {amount} ⭐! Это помогает развивать бота 💙",
         payload=f"donate_{amount}",  # Уникальный payload для отслеживания
         currency="XTR",  # XTR - Telegram Stars
-        prices=[LabeledPrice(label=f"Звезды ({amount})", amount=amount)],
+        prices=[LabeledPrice(label=f"Поддержка ({amount} ⭐)", amount=amount)],
         provider_token="",  # Для Telegram Stars provider_token должен быть пустым
     )
 
@@ -681,30 +662,12 @@ async def process_successful_payment(msg: Message):
     amount_str = payload.split("_")[1]
     amount = int(amount_str)
     
-    # Соответствие звезд к монетам
-    star_to_coins = {
-        50: 100,
-        100: 250,
-        250: 700,
-        500: 1500,
-        1000: 3500,
-    }
-    
-    coins = star_to_coins.get(amount, 0)
-    
-    if coins > 0:
-        # Добавить монеты пользователю
-        update_balance(msg.from_user.id, coins, win=True, game_type="donation")
-        new_bal = get_balance(msg.from_user.id)
-        
-        text = (
-            f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>Спасибо за поддержку!</b>\n\n'
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Вы получили: <b>+{coins} монет</b>\n'
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{new_bal} монет</b>'
-        )
-        await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
-    else:
-        await msg.answer("❌ Ошибка при обработке платежа", parse_mode="HTML")
+    # Просто отправить спасибо, без добавления монет
+    text = (
+        f'<tg-emoji emoji-id="6041731551845159060">🙏</tg-emoji> <b>Спасибо за {amount} звезд!</b>\n\n'
+        f'Ваша поддержка очень важна для развития бота! 💙'
+    )
+    await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
 
 
 @dp.callback_query(F.data == "open_roulette")
