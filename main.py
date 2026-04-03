@@ -249,6 +249,10 @@ class RocketState(StatesGroup):
     choosing_amount = State()
     in_game = State()
 
+class MinesweeperState(StatesGroup):
+    choosing_amount = State()
+    in_game = State()
+
 RED_NUMBERS   = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
 BLACK_NUMBERS = {2,4,6,8,10,11,13,15,17,20,22,24,26,28,29,31,33,35}
 
@@ -303,6 +307,10 @@ def main_menu_kb():
         [InlineKeyboardButton(
             text="Ракета",
             callback_data="open_rocket",
+        )],
+        [InlineKeyboardButton(
+            text="Сапер",
+            callback_data="open_minesweeper",
         )],
         [
             InlineKeyboardButton(
@@ -617,7 +625,7 @@ async def cmd_start(msg: Message, state: FSMContext):
         f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Добро пожаловать в Казино!</b>\n\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ваш баланс: <b>{bal} монет</b>\n\n'
         f'<tg-emoji emoji-id="5778672437122045013">📦</tg-emoji> Нажми на:\n'
-        f'<blockquote>"Рулетка" или "Орёл или Решка" чтобы играть</blockquote>'
+        f'<blockquote>"Рулетка" или "Орёл или Решка" или "Ракета" или "Сапер" чтобы играть</blockquote>'
     )
     await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
 
@@ -693,6 +701,8 @@ async def show_history(cq: CallbackQuery):
                 game_name = "Монета"
             elif entry['game_type'] == "rocket":
                 game_name = "Ракета"
+            elif entry['game_type'] == "minesweeper":
+                game_name = "Сапер"
             elif entry['game_type'] == "admin_topup":
                 game_name = "Пополнение"
             else:
@@ -1432,6 +1442,8 @@ async def admin_show_user_history(cq: CallbackQuery):
                 game_name = "Монета"
             elif entry['game_type'] == "rocket":
                 game_name = "Ракета"
+            elif entry['game_type'] == "minesweeper":
+                game_name = "Сапер"
             elif entry['game_type'] == "admin_topup":
                 game_name = "Пополнение от админа"
             else:
@@ -1689,6 +1701,228 @@ def next_multiplier(current: float) -> float:
     step = round(random.uniform(0.1, 0.6), 2)
     return round(current + step, 2)
 
+
+def generate_minesweeper_field(size: int = 5, mines: int = 5):
+    """Генерирует поле Сапера. Возвращает поле (True=миния, False=пусто)."""
+    field = [[False for _ in range(size)] for _ in range(size)]
+    placed = 0
+    while placed < mines:
+        r, c = random.randint(0, size-1), random.randint(0, size-1)
+        if not field[r][c]:
+            field[r][c] = True
+            placed += 1
+    return field
+
+
+def check_minesweeper_cell(field: list, row: int, col: int) -> tuple:
+    """Проверяет ячейку. Возвращает (is_mine, count_nearby_mines)"""
+    size = len(field)
+    if field[row][col]:
+        return True, 0
+    
+    count = 0
+    for dr in [-1, 0, 1]:
+        for dc in [-1, 0, 1]:
+            if dr == 0 and dc == 0:
+                continue
+            nr, nc = row + dr, col + dc
+            if 0 <= nr < size and 0 <= nc < size and field[nr][nc]:
+                count += 1
+    return False, count
+
+
+@dp.callback_query(F.data == "open_minesweeper")
+async def open_minesweeper(cq: CallbackQuery, state: FSMContext):
+    user_id = cq.from_user.id
+    bal = get_balance(user_id)
+    if bal <= 0:
+        await cq.answer("У вас нет монет! Сбросьте баланс.", show_alert=True)
+        return
+    await state.set_state(MinesweeperState.choosing_amount)
+    text = (
+        f"💣 <b>Сапер</b>\n"
+        f"💰 Баланс: <b>{bal} монет</b>\n\n"
+        f"Открывай ячейки и не попадись на мину!\n"
+        f"Чем больше ячеек откроешь — тем выше множитель.\n\n"
+        f"<b>Выбери сумму ставки:</b>"
+    )
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=bet_amount_kb(bal))
+
+
+@dp.callback_query(MinesweeperState.choosing_amount, F.data.startswith("amount_"))
+async def minesweeper_set_amount(cq: CallbackQuery, state: FSMContext):
+    user_id = cq.from_user.id
+    raw = cq.data.replace("amount_", "")
+    amount = int(raw)
+    bal = get_balance(user_id)
+    if amount > bal:
+        await cq.answer("Недостаточно средств!", show_alert=True)
+        return
+    
+    field = generate_minesweeper_field(size=5, mines=5)
+    revealed = [[False for _ in range(5)] for _ in range(5)]
+    
+    await state.set_state(MinesweeperState.in_game)
+    await state.update_data(
+        minesweeper_amount=amount,
+        minesweeper_field=field,
+        minesweeper_revealed=revealed,
+        minesweeper_opened=0
+    )
+    
+    text = _minesweeper_text(amount, field, revealed)
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=_minesweeper_kb(revealed))
+    await cq.answer()
+
+
+@dp.message(MinesweeperState.choosing_amount)
+async def minesweeper_custom_amount(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    if not data.get("waiting_custom"):
+        return
+    bal = get_balance(msg.from_user.id)
+    try:
+        amount = int(msg.text.strip())
+        assert 1 <= amount <= bal
+    except:
+        await msg.answer(f"❗ Введите целое число от <b>1</b> до <b>{bal}</b>.", parse_mode="HTML")
+        return
+    
+    field = generate_minesweeper_field(size=5, mines=5)
+    revealed = [[False for _ in range(5)] for _ in range(5)]
+    
+    await state.set_state(MinesweeperState.in_game)
+    await state.update_data(
+        minesweeper_amount=amount,
+        minesweeper_field=field,
+        minesweeper_revealed=revealed,
+        minesweeper_opened=0,
+        waiting_custom=False
+    )
+    
+    text = _minesweeper_text(amount, field, revealed)
+    await msg.answer(text, parse_mode="HTML", reply_markup=_minesweeper_kb(revealed))
+
+
+def _minesweeper_text(amount: int, field: list, revealed: list) -> str:
+    multiplier = 1.0 + (sum(sum(row) for row in revealed) * 0.3)
+    potential = int(amount * multiplier)
+    text = (
+        f"💣 <b>Сапер</b>\n\n"
+        f"💸 Ставка: <b>{amount} монет</b>\n"
+        f"📈 Множитель: <b>x{multiplier:.2f}</b>\n"
+        f"💰 Можно забрать: <b>{potential} монет</b>\n\n"
+        f"<b>Откроется ячейки:</b>\n"
+    )
+    
+    for row_idx, row in enumerate(revealed):
+        for col_idx, is_revealed in enumerate(row):
+            if is_revealed:
+                if field[row_idx][col_idx]:
+                    text += "💥"
+                else:
+                    text += "✅"
+            else:
+                text += "🟫"
+        text += "\n"
+    
+    return text
+
+
+def _minesweeper_kb(revealed: list) -> InlineKeyboardMarkup:
+    buttons = []
+    for row_idx in range(5):
+        row_buttons = []
+        for col_idx in range(5):
+            if revealed[row_idx][col_idx]:
+                row_buttons.append(InlineKeyboardButton(text="✅", callback_data=f"ms_cell_{row_idx}_{col_idx}"))
+            else:
+                row_buttons.append(InlineKeyboardButton(text="🟫", callback_data=f"ms_cell_{row_idx}_{col_idx}"))
+        buttons.append(row_buttons)
+    
+    buttons.append([InlineKeyboardButton(
+        text="💰 Забрать",
+        callback_data="ms_cashout",
+        icon_custom_emoji_id="5870633910337015697"
+    )])
+    buttons.append([InlineKeyboardButton(
+        text="В меню",
+        callback_data="back_main",
+        icon_custom_emoji_id="5893057118545646106"
+    )])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+@dp.callback_query(MinesweeperState.in_game, F.data.startswith("ms_cell_"))
+async def minesweeper_open_cell(cq: CallbackQuery, state: FSMContext):
+    user_id = cq.from_user.id
+    parts = cq.data.split("_")
+    row, col = int(parts[2]), int(parts[3])
+    
+    data = await state.get_data()
+    field = data.get("minesweeper_field", [])
+    revealed = data.get("minesweeper_revealed", [])
+    amount = data.get("minesweeper_amount", 0)
+    
+    if (row < 0 or row >= 5 or col < 0 or col >= 5 or revealed[row][col]):
+        await cq.answer("Эта ячейка уже открыта!", show_alert=False)
+        return
+    
+    revealed[row][col] = True
+    
+    if field[row][col]:
+        update_balance(user_id, -amount, win=False, game_type="minesweeper")
+        await state.clear()
+        text = (
+            f"💥 <b>МИНА!</b>\n\n"
+            f"💸 Ставка: <b>{amount} монет</b>\n"
+            f"❌ Вы потеряли: <b>-{amount} монет</b>\n\n"
+            f"💰 Новый баланс: <b>{get_balance(user_id)} монет</b>"
+        )
+        await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💣 Сыграть снова", callback_data="open_minesweeper")],
+            [InlineKeyboardButton(text="В меню", callback_data="back_main",
+                                  icon_custom_emoji_id="5893057118545646106")],
+        ]))
+    else:
+        await state.update_data(minesweeper_revealed=revealed)
+        text = _minesweeper_text(amount, field, revealed)
+        await cq.message.edit_text(text, parse_mode="HTML", reply_markup=_minesweeper_kb(revealed))
+    
+    await cq.answer()
+
+
+@dp.callback_query(MinesweeperState.in_game, F.data == "ms_cashout")
+async def minesweeper_cashout(cq: CallbackQuery, state: FSMContext):
+    user_id = cq.from_user.id
+    data = await state.get_data()
+    
+    amount = data.get("minesweeper_amount", 0)
+    revealed = data.get("minesweeper_revealed", [])
+    opened_count = sum(sum(row) for row in revealed)
+    multiplier = 1.0 + (opened_count * 0.3)
+    
+    total_payout = int(amount * multiplier)
+    net_profit = total_payout - amount
+    
+    update_balance(user_id, net_profit, win=True, game_type="minesweeper")
+    await state.clear()
+    
+    text = (
+        f"✅ <b>Вы забрали выигрыш!</b>\n\n"
+        f"📈 Открыто ячеек: <b>{opened_count}</b>\n"
+        f"📈 Множитель: <b>x{multiplier:.2f}</b>\n"
+        f"💸 Ставка: <b>{amount} монет</b>\n"
+        f"🎉 Выигрыш: <b>+{net_profit} монет</b>\n\n"
+        f"💰 Новый баланс: <b>{get_balance(user_id)} монет</b>"
+    )
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💣 Сыграть снова", callback_data="open_minesweeper")],
+        [InlineKeyboardButton(text="В меню", callback_data="back_main",
+                              icon_custom_emoji_id="5893057118545646106")],
+    ]))
+    await cq.answer()
 
 
 @dp.callback_query(F.data == "open_rocket")
