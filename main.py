@@ -235,6 +235,10 @@ class AdminState(StatesGroup):
 class DonateState(StatesGroup):
     entering_custom_amount = State()
 
+class RocketState(StatesGroup):
+    choosing_amount = State()
+    in_game = State()
+
 RED_NUMBERS   = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
 BLACK_NUMBERS = {2,4,6,8,10,11,13,15,17,20,22,24,26,28,29,31,33,35}
 
@@ -286,6 +290,10 @@ def main_menu_kb():
             callback_data="open_coin",
             icon_custom_emoji_id="5774585885154131652"
         )],
+        [InlineKeyboardButton(
+            text="🚀 Ракета",
+            callback_data="open_rocket",
+        )],
         [
             InlineKeyboardButton(
                 text="Статистика",
@@ -302,6 +310,42 @@ def main_menu_kb():
             text="Сбросить баланс",
             callback_data="reset",
             icon_custom_emoji_id="5345906554510012647"
+        )],
+    ])
+
+def rocket_game_kb():
+    """Кнопки во время игры в ракету"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🚀 Дальше", callback_data="rocket_next"),
+            InlineKeyboardButton(text="💰 Забрать", callback_data="rocket_cashout"),
+        ],
+    ])
+
+def rocket_amount_kb(balance: int):
+    """Клавиатура выбора ставки для ракеты"""
+    q1 = max(1, round(balance * 0.25))
+    q2 = max(1, round(balance * 0.50))
+    q3 = max(1, round(balance * 0.75))
+    q4 = balance
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=f"25%  ({fmt(q1)})", callback_data=f"rocket_amount_{q1}"),
+            InlineKeyboardButton(text=f"75%  ({fmt(q3)})", callback_data=f"rocket_amount_{q3}"),
+        ],
+        [
+            InlineKeyboardButton(text=f"50%  ({fmt(q2)})", callback_data=f"rocket_amount_{q2}"),
+            InlineKeyboardButton(text=f"Ва-банк ({fmt(q4)})", callback_data=f"rocket_amount_{q4}"),
+        ],
+        [InlineKeyboardButton(
+            text="Ввести вручную",
+            callback_data="rocket_amount_custom",
+            icon_custom_emoji_id="5870676941614354370"
+        )],
+        [InlineKeyboardButton(
+            text="Назад",
+            callback_data="back_main",
+            icon_custom_emoji_id="5893057118545646106"
         )],
     ])
 
@@ -1564,6 +1608,192 @@ async def daily_bonus_task():
                 pass
 
         await asyncio.sleep(60)
+
+def generate_crash_point() -> float:
+    """Генерирует точку краша. Чем выше множитель — тем реже."""
+    r = random.random()
+    if r < 0.40:
+        return round(random.uniform(1.0, 1.5), 2)   # 40% — краш до 1.5x
+    elif r < 0.65:
+        return round(random.uniform(1.5, 2.5), 2)   # 25% — краш 1.5–2.5x
+    elif r < 0.80:
+        return round(random.uniform(2.5, 4.0), 2)   # 15% — краш 2.5–4x
+    elif r < 0.92:
+        return round(random.uniform(4.0, 8.0), 2)   # 12% — краш 4–8x
+    else:
+        return round(random.uniform(8.0, 20.0), 2)  # 8%  — краш 8–20x
+
+def next_multiplier(current: float) -> float:
+    """Следующий шаг множителя — случайный прирост."""
+    step = round(random.uniform(0.1, 0.6), 2)
+    return round(current + step, 2)
+
+
+
+@dp.callback_query(F.data == "open_rocket")
+async def open_rocket(cq: CallbackQuery, state: FSMContext):
+    user_id = cq.from_user.id
+    bal = get_balance(user_id)
+    if bal <= 0:
+        await cq.answer("У вас нет монет! Сбросьте баланс.", show_alert=True)
+        return
+    await state.set_state(RocketState.choosing_amount)
+    text = (
+        f"🚀 <b>Ракета</b>\n"
+        f"💰 Баланс: <b>{bal} монет</b>\n\n"
+        f"Ракета взлетает и множитель растёт.\n"
+        f"Нажми <b>«Дальше»</b> чтобы продолжить лететь,\n"
+        f"или <b>«Забрать»</b> чтобы зафиксировать выигрыш.\n"
+        f"Если ракета взорвётся — ставка сгорает!\n\n"
+        f"<b>Выбери сумму ставки:</b>"
+    )
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=rocket_amount_kb(bal))
+
+
+@dp.callback_query(RocketState.choosing_amount, F.data == "rocket_amount_custom")
+async def rocket_amount_custom_cb(cq: CallbackQuery, state: FSMContext):
+    await state.update_data(waiting_custom=True)
+    bal = get_balance(cq.from_user.id)
+    await cq.message.edit_text(
+        f"✏️ <b>Введите сумму ставки:</b>\n💰 Баланс: <b>{bal} монет</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Назад", callback_data="open_rocket",
+                                  icon_custom_emoji_id="5893057118545646106")]
+        ])
+    )
+    await cq.answer()
+
+
+@dp.callback_query(RocketState.choosing_amount, F.data.startswith("rocket_amount_"))
+async def rocket_set_amount(cq: CallbackQuery, state: FSMContext):
+    user_id = cq.from_user.id
+    raw = cq.data.replace("rocket_amount_", "")
+    amount = int(raw)
+    bal = get_balance(user_id)
+    if amount > bal:
+        await cq.answer("Недостаточно средств!", show_alert=True)
+        return
+    await _start_rocket_game(cq.message, state, user_id, amount)
+    await cq.answer()
+
+
+@dp.message(RocketState.choosing_amount)
+async def rocket_custom_amount(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    if not data.get("waiting_custom"):
+        return
+    bal = get_balance(msg.from_user.id)
+    try:
+        amount = int(msg.text.strip())
+        assert 1 <= amount <= bal
+    except:
+        await msg.answer(f"❗ Введите целое число от <b>1</b> до <b>{bal}</b>.", parse_mode="HTML")
+        return
+    await _start_rocket_game(msg, state, msg.from_user.id, amount, is_message=True)
+
+
+async def _start_rocket_game(message, state: FSMContext, user_id: int, amount: int, is_message: bool = False):
+    """Запустить новую игру в ракету."""
+    crash_point = generate_crash_point()
+    start_multiplier = 1.0
+
+    await state.set_state(RocketState.in_game)
+    await state.update_data(
+        rocket_amount=amount,
+        rocket_multiplier=start_multiplier,
+        rocket_crash=crash_point,
+        waiting_custom=False,
+    )
+
+    text = _rocket_text(amount, start_multiplier)
+
+    if is_message:
+        await message.answer(text, parse_mode="HTML", reply_markup=rocket_game_kb())
+    else:
+        await message.edit_text(text, parse_mode="HTML", reply_markup=rocket_game_kb())
+
+
+def _rocket_text(amount: int, multiplier: float) -> str:
+    potential = int(amount * multiplier)
+    stars = "⭐" * min(int(multiplier), 10)
+    return (
+        f"🚀 <b>Ракета летит!</b>\n\n"
+        f"💸 Ставка: <b>{amount} монет</b>\n"
+        f"📈 Множитель: <b>x{multiplier:.2f}</b>  {stars}\n"
+        f"💰 Можно забрать: <b>{potential} монет</b>\n\n"
+        f"Нажми <b>«Дальше»</b> чтобы лететь выше\n"
+        f"или <b>«Забрать»</b> чтобы зафиксировать!"
+    )
+
+
+@dp.callback_query(RocketState.in_game, F.data == "rocket_next")
+async def rocket_next(cq: CallbackQuery, state: FSMContext):
+    """Игрок нажал Дальше — проверяем краш или двигаемся вперёд."""
+    user_id = cq.from_user.id
+    data = await state.get_data()
+
+    amount = data.get("rocket_amount", 0)
+    multiplier = data.get("rocket_multiplier", 1.0)
+    crash_point = data.get("rocket_crash", 1.0)
+
+    new_multiplier = next_multiplier(multiplier)
+
+    if new_multiplier >= crash_point:
+        # 💥 КРАШ
+        update_balance(user_id, -amount, win=False, game_type="rocket")
+        await state.clear()
+        text = (
+            f"💥 <b>РАКЕТА ВЗОРВАЛАСЬ!</b>\n\n"
+            f"📈 Множитель дошёл до: <b>x{crash_point:.2f}</b>\n"
+            f"💸 Ставка: <b>{amount} монет</b>\n"
+            f"❌ Вы потеряли: <b>-{amount} монет</b>\n\n"
+            f"💰 Новый баланс: <b>{get_balance(user_id)} монет</b>"
+        )
+        await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🚀 Сыграть снова", callback_data="open_rocket")],
+            [InlineKeyboardButton(text="В меню", callback_data="back_main",
+                                  icon_custom_emoji_id="5893057118545646106")],
+        ]))
+    else:
+        # ✅ Продолжаем лететь
+        await state.update_data(rocket_multiplier=new_multiplier)
+        text = _rocket_text(amount, new_multiplier)
+        try:
+            await cq.message.edit_text(text, parse_mode="HTML", reply_markup=rocket_game_kb())
+        except Exception:
+            pass
+
+    await cq.answer()
+
+
+@dp.callback_query(RocketState.in_game, F.data == "rocket_cashout")
+async def rocket_cashout(cq: CallbackQuery, state: FSMContext):
+    """Игрок нажал Забрать — фиксируем выигрыш."""
+    user_id = cq.from_user.id
+    data = await state.get_data()
+
+    amount = data.get("rocket_amount", 0)
+    multiplier = data.get("rocket_multiplier", 1.0)
+
+    profit = int(amount * multiplier)
+    update_balance(user_id, profit, win=True, game_type="rocket")
+    await state.clear()
+
+    text = (
+        f"✅ <b>Вы забрали выигрыш!</b>\n\n"
+        f"📈 Множитель: <b>x{multiplier:.2f}</b>\n"
+        f"💸 Ставка: <b>{amount} монет</b>\n"
+        f"🎉 Выигрыш: <b>+{profit} монет</b>\n\n"
+        f"💰 Новый баланс: <b>{get_balance(user_id)} монет</b>"
+    )
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚀 Сыграть снова", callback_data="open_rocket")],
+        [InlineKeyboardButton(text="В меню", callback_data="back_main",
+                              icon_custom_emoji_id="5893057118545646106")],
+    ]))
+    await cq.answer()
+
 
 async def main():
     init_db()
