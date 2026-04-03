@@ -39,6 +39,20 @@ def init_db():
                     losses     INTEGER DEFAULT 0
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS history (
+                    id         SERIAL PRIMARY KEY,
+                    user_id    BIGINT NOT NULL,
+                    amount     INTEGER NOT NULL,
+                    is_win     BOOLEAN NOT NULL,
+                    game_type  TEXT DEFAULT 'roulette',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_history_user_id ON history(user_id)
+            """)
 
 def get_user(user_id: int):
     with db_connect() as conn:
@@ -54,7 +68,7 @@ def create_user(user_id: int, username: str):
                 (user_id, username, STARTING_BALANCE)
             )
 
-def update_balance(user_id: int, delta: int, win: bool):
+def update_balance(user_id: int, delta: int, win: bool, game_type: str = "roulette"):
     col = "wins" if win else "losses"
     with db_connect() as conn:
         with conn.cursor() as cur:
@@ -62,6 +76,8 @@ def update_balance(user_id: int, delta: int, win: bool):
                 f"UPDATE users SET balance = balance + %s, {col} = {col} + 1 WHERE user_id=%s",
                 (delta, user_id)
             )
+    # Добавляем запись в историю
+    add_history(user_id, abs(delta), win, game_type)
 
 def get_balance(user_id: int) -> int:
     with db_connect() as conn:
@@ -105,6 +121,46 @@ def set_balance(user_id: int, amount: int):
                 "UPDATE users SET balance = %s WHERE user_id=%s",
                 (amount, user_id)
             )
+
+def add_history(user_id: int, amount: int, is_win: bool, game_type: str = "roulette"):
+    """Добавить запись в историю ставок"""
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO history (user_id, amount, is_win, game_type)
+                   VALUES (%s, %s, %s, %s)""",
+                (user_id, amount, is_win, game_type)
+            )
+
+def get_history(user_id: int, limit: int = 10):
+    """Получить последние ставки пользователя"""
+    with db_connect() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """SELECT amount, is_win, game_type, created_at
+                   FROM history
+                   WHERE user_id=%s
+                   ORDER BY created_at DESC
+                   LIMIT %s""",
+                (user_id, limit)
+            )
+            return cur.fetchall()
+
+def get_user_history_stats(user_id: int):
+    """Получить статистику по истории (выигрыши/проигрыши)"""
+    with db_connect() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """SELECT 
+                   SUM(CASE WHEN is_win THEN amount ELSE 0 END) as total_won,
+                   SUM(CASE WHEN NOT is_win THEN amount ELSE 0 END) as total_lost,
+                   COUNT(CASE WHEN is_win THEN 1 END) as win_count,
+                   COUNT(CASE WHEN NOT is_win THEN 1 END) as lose_count
+                   FROM history
+                   WHERE user_id=%s""",
+                (user_id,)
+            )
+            return cur.fetchone()
 
 
 # ──────────────────────────────────────────────
@@ -326,6 +382,21 @@ def admin_menu_kb():
         )],
     ])
 
+def stats_menu_kb():
+    """Клавиатура меню статистики"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="История ставок",
+            callback_data="stats_history",
+            icon_custom_emoji_id="5870930636742595124"  # 📊
+        )],
+        [InlineKeyboardButton(
+            text="Назад в меню",
+            callback_data="back_main",
+            icon_custom_emoji_id="5893057118545646106"  # 📰
+        )],
+    ])
+
 def users_list_kb(users: list, page: int = 0):
     """Создать клавиатуру со списком пользователей (постраничная)"""
     per_page = 5
@@ -376,6 +447,11 @@ def edit_user_kb(user_id: int):
             text="Изменить баланс",
             callback_data=f"admin_edit_balance_{user_id}",
             icon_custom_emoji_id="5904462880941545555"  # 🪙
+        )],
+        [InlineKeyboardButton(
+            text="История ставок",
+            callback_data=f"admin_user_history_{user_id}",
+            icon_custom_emoji_id="5870930636742595124"  # 📊
         )],
         [InlineKeyboardButton(
             text="Назад к списку",
@@ -433,7 +509,47 @@ async def show_stats(cq: CallbackQuery):
         f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Поражений: <b>{losses}</b>\n'
         f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Процент побед: <b>{rate}%</b>'
     )
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=main_menu_kb())
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=stats_menu_kb())
+
+
+@dp.callback_query(F.data == "stats_history")
+async def show_history(cq: CallbackQuery):
+    """Показать историю ставок пользователя"""
+    user_id = cq.from_user.id
+    history = get_history(user_id, limit=15)
+    
+    if not history:
+        text = f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> <b>Нет истории ставок</b>'
+    else:
+        text = f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> <b>История ставок (последние 15):</b>\n\n'
+        for entry in history:
+            status_emoji = f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji>' if entry['is_win'] else f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji>'
+            game_name = "Монета" if entry['game_type'] == "coin" else "Рулетка"
+            sign = '+' if entry['is_win'] else '-'
+            text += f'{status_emoji} {sign}{entry["amount"]} - {game_name}\n'
+    
+    text += f'\n<tg-emoji emoji-id="5870921681735781843">📊</tg-emoji> <b>Статистика по истории:</b>\n'
+    stats = get_user_history_stats(user_id)
+    if stats and stats['win_count']:
+        total_won = stats['total_won'] or 0
+        total_lost = stats['total_lost'] or 0
+        text += f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Выигрыши: <b>+{total_won}</b>\n'
+        text += f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Проигрыши: <b>-{total_lost}</b>\n'
+        net = total_won - total_lost
+        if net > 0:
+            text += f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Баланс: <b>+{net}</b>'
+        elif net < 0:
+            text += f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Баланс: <b>{net}</b>'
+        else:
+            text += f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>0</b>'
+    
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="Назад в статистику",
+            callback_data="stats",
+            icon_custom_emoji_id="5893057118545646106"  # 📰
+        )],
+    ]))
 
 
 @dp.callback_query(F.data == "reset")
@@ -534,13 +650,13 @@ async def handle_number_input(msg: Message, state: FSMContext):
         color = number_color(result)
         if won:
             profit = amount * mult
-            update_balance(msg.from_user.id, profit, win=True)
+            update_balance(msg.from_user.id, profit, win=True, game_type="roulette")
             outcome_text = (
                 f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>ПОБЕДА!</b>\n'
                 f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{profit} монет (x{mult})'
             )
         else:
-            update_balance(msg.from_user.id, -amount, win=False)
+            update_balance(msg.from_user.id, -amount, win=False, game_type="roulette")
             outcome_text = (
                 f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Поражение.</b>\n'
                 f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{amount} монет'
@@ -623,13 +739,13 @@ async def place_bet(cq: CallbackQuery, state: FSMContext):
 
     if won:
         profit = amount * mult
-        update_balance(cq.from_user.id, profit, win=True)
+        update_balance(cq.from_user.id, profit, win=True, game_type="roulette")
         outcome_text = (
             f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>ПОБЕДА!</b>\n'
             f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{profit} монет (x{mult})'
         )
     else:
-        update_balance(cq.from_user.id, -amount, win=False)
+        update_balance(cq.from_user.id, -amount, win=False, game_type="roulette")
         outcome_text = (
             f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Поражение.</b>\n'
             f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{amount} монет'
@@ -730,13 +846,13 @@ async def handle_coin_amount_input(msg: Message, state: FSMContext):
 
         if won:
             profit = amount * 2  # 2x payout for coin flip
-            update_balance(msg.from_user.id, profit, win=True)
+            update_balance(msg.from_user.id, profit, win=True, game_type="coin")
             outcome_text = (
                 f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>ПОБЕДА!</b>\n'
                 f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{profit} монет (x2)'
             )
         else:
-            update_balance(msg.from_user.id, -amount, win=False)
+            update_balance(msg.from_user.id, -amount, win=False, game_type="coin")
             outcome_text = (
                 f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Поражение.</b>\n'
                 f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{amount} монет'
@@ -788,13 +904,13 @@ async def place_coin_bet(cq: CallbackQuery, state: FSMContext):
 
     if won:
         profit = amount * 2  # 2x payout for coin flip
-        update_balance(cq.from_user.id, profit, win=True)
+        update_balance(cq.from_user.id, profit, win=True, game_type="coin")
         outcome_text = (
             f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>ПОБЕДА!</b>\n'
             f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{profit} монет (x2)'
         )
     else:
-        update_balance(cq.from_user.id, -amount, win=False)
+        update_balance(cq.from_user.id, -amount, win=False, game_type="coin")
         outcome_text = (
             f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Поражение.</b>\n'
             f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{amount} монет'
@@ -894,6 +1010,59 @@ async def edit_user_menu(cq: CallbackQuery, state: FSMContext):
     
     await state.update_data(admin_user_id=user_id)
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=edit_user_kb(user_id))
+
+
+@dp.callback_query(F.data.startswith("admin_user_history_"))
+async def admin_show_user_history(cq: CallbackQuery):
+    """Показать историю ставок пользователя для админа"""
+    if cq.from_user.id != ADMIN_ID:
+        return
+    
+    user_id = int(cq.data.split("_")[-1])
+    row = get_user(user_id)
+    
+    if not row:
+        await cq.answer(
+            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Пользователь не найден',
+            show_alert=True
+        )
+        return
+    
+    username = row[1]
+    history = get_history(user_id, limit=15)
+    
+    if not history:
+        text = f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> <b>История ставок {username or f"ID {user_id}"}:</b>\n\nНет истории ставок'
+    else:
+        text = f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> <b>История ставок {username or f"ID {user_id}"} (последние 15):</b>\n\n'
+        for entry in history:
+            status_emoji = f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji>' if entry['is_win'] else f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji>'
+            game_name = "Монета" if entry['game_type'] == "coin" else "Рулетка"
+            sign = '+' if entry['is_win'] else '-'
+            text += f'{status_emoji} {sign}{entry["amount"]} - {game_name}\n'
+    
+    text += f'\n<tg-emoji emoji-id="5870921681735781843">📊</tg-emoji> <b>Статистика:</b>\n'
+    stats = get_user_history_stats(user_id)
+    if stats and stats['win_count']:
+        total_won = stats['total_won'] or 0
+        total_lost = stats['total_lost'] or 0
+        text += f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Выигрыши: <b>+{total_won}</b>\n'
+        text += f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Проигрыши: <b>-{total_lost}</b>\n'
+        net = total_won - total_lost
+        if net > 0:
+            text += f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Баланс: <b>+{net}</b>'
+        elif net < 0:
+            text += f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Баланс: <b>{net}</b>'
+        else:
+            text += f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>0</b>'
+    
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="Назад к пользователю",
+            callback_data=f"admin_edit_user_{user_id}",
+            icon_custom_emoji_id="5893057118545646106"  # 📰
+        )],
+    ]))
 
 
 @dp.callback_query(F.data.startswith("admin_edit_balance_"))
@@ -1061,7 +1230,7 @@ async def daily_bonus_task():
                 )
             except Exception:
                 pass
-
+ 
         await asyncio.sleep(60)
 
 # ──────────────────────────────────────────────
