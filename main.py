@@ -614,14 +614,10 @@ async def open_donate(cq: CallbackQuery):
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=donate_kb())
 
 
-@dp.callback_query(F.data.startswith("donate_"))
+@dp.callback_query(F.data.startswith("donate_") & (F.data != "donate_custom"))
 async def process_donation(cq: CallbackQuery):
     """Обработать выбор суммы для доната"""
     amount_str = cq.data.split("_")[1]
-    
-    # Если это custom, перейти в режим ввода
-    if amount_str == "custom":
-        return
     
     try:
         amount = int(amount_str)
