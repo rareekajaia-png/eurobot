@@ -594,7 +594,7 @@ async def back_main(cq: CallbackQuery, state: FSMContext):
     await state.clear()
     bal = get_balance(cq.from_user.id)
     text = (
-        f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Европейская Рулетка</b>\n'
+        f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Казино</b>\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>'
     )
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=main_menu_kb())
@@ -603,7 +603,7 @@ async def back_main(cq: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "balance")
 async def show_balance(cq: CallbackQuery):
     bal = get_balance(cq.from_user.id)
-    await cq.answer(f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ваш баланс: {bal} монет', show_alert=True)
+    await cq.answer(f'Ваш баланс: {bal} монет', show_alert=True)
 
 
 @dp.callback_query(F.data == "stats")
@@ -794,7 +794,7 @@ async def open_roulette(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
     if bal <= 0:
         await cq.answer(
-            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> У вас нет монет! Сбросьте баланс.',
+            f'❌ У вас нет монет! Сбросьте баланс.',
             show_alert=True
         )
         return
@@ -943,7 +943,7 @@ async def place_bet(cq: CallbackQuery, state: FSMContext):
 
     if not bet_type or bet_type == "pending_number":
         await cq.answer(
-            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Сначала выберите тип ставки.',
+            f'❌ Сначала выберите тип ставки.',
             show_alert=True
         )
         return
@@ -951,7 +951,7 @@ async def place_bet(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
     if amount > bal:
         await cq.answer(
-            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Недостаточно средств!',
+            f'❌ Недостаточно средств!',
             show_alert=True
         )
         return
@@ -1000,7 +1000,7 @@ async def open_coin(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
     if bal <= 0:
         await cq.answer(
-            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> У вас нет монет! Сбросьте баланс.',
+            f'❌ У вас нет монет! Сбросьте баланс.',
             show_alert=True
         )
         return
@@ -1108,7 +1108,7 @@ async def place_coin_bet(cq: CallbackQuery, state: FSMContext):
 
     if not coin_choice:
         await cq.answer(
-            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Сначала выберите сторону монеты.',
+            f'❌ Сначала выберите сторону монеты.',
             show_alert=True
         )
         return
@@ -1116,7 +1116,7 @@ async def place_coin_bet(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
     if amount > bal:
         await cq.answer(
-            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Недостаточно средств!',
+            f'❌ Недостаточно средств!',
             show_alert=True
         )
         return
@@ -1175,7 +1175,7 @@ async def repeat_roulette(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(user_id)
     if amount > bal:
         await cq.answer(
-            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Недостаточно монет! Нужно {amount}, а у вас {bal}.',
+            f'❌ Недостаточно монет! Нужно {amount}, а у вас {bal}.',
             show_alert=True
         )
         return
@@ -1231,7 +1231,7 @@ async def repeat_coin(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(user_id)
     if amount > bal:
         await cq.answer(
-            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Недостаточно монет! Нужно {amount}, а у вас {bal}.',
+            f'❌ Недостаточно монет! Нужно {amount}, а у вас {bal}.',
             show_alert=True
         )
         return
@@ -1287,7 +1287,7 @@ async def show_users_list(cq: CallbackQuery, state: FSMContext):
     """Показать список пользователей"""
     if cq.from_user.id != ADMIN_ID:
         await cq.answer(
-            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Только админ может это делать',
+            f'❌ Только админ может это делать',
             show_alert=True
         )
         return
@@ -1327,7 +1327,7 @@ async def edit_user_menu(cq: CallbackQuery, state: FSMContext):
     
     if not row:
         await cq.answer(
-            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Пользователь не найден',
+            f'❌ Пользователь не найден',
             show_alert=True
         )
         return
@@ -1358,7 +1358,7 @@ async def admin_show_user_history(cq: CallbackQuery):
     
     if not row:
         await cq.answer(
-            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Пользователь не найден',
+            f'❌ Пользователь не найден',
             show_alert=True
         )
         return
@@ -1457,7 +1457,7 @@ async def broadcast_menu(cq: CallbackQuery, state: FSMContext):
     """Меню рассылки сообщений"""
     if cq.from_user.id != ADMIN_ID:
         await cq.answer(
-            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Только админ может это делать',
+            f'❌ Только админ может это делать',
             show_alert=True
         )
         return
