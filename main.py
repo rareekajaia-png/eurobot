@@ -557,11 +557,11 @@ async def show_history(cq: CallbackQuery):
         text += f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Проигрыши: <b>-{total_lost}</b>\n'
         net = total_won - total_lost
         if net > 0:
-            text += f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Баланс: <b>+{net}</b>'
+            text += f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Итог: <b>+{net}</b>'
         elif net < 0:
-            text += f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Баланс: <b>{net}</b>'
+            text += f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Итог: <b>{net}</b>'
         else:
-            text += f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>0</b>'
+            text += f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Итог: <b>0</b>'
     
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
@@ -577,7 +577,7 @@ async def reset_handler(cq: CallbackQuery, state: FSMContext):
     reset_balance(cq.from_user.id)   # wins/losses не трогаем
     await state.clear()
     await cq.answer(
-        f'<✅ Баланс сброшен до 1000 монет!',
+        f'✅ Баланс сброшен до 1000 монет!',
         show_alert=True
     )
     await cq.message.edit_text(
@@ -1113,11 +1113,11 @@ async def admin_show_user_history(cq: CallbackQuery):
         text += f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Проигрыши: <b>-{total_lost}</b>\n'
         net = total_won - total_lost
         if net > 0:
-            text += f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Баланс: <b>+{net}</b>'
+            text += f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Итог: <b>+{net}</b>'
         elif net < 0:
-            text += f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Баланс: <b>{net}</b>'
+            text += f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Итог: <b>{net}</b>'
         else:
-            text += f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>0</b>'
+            text += f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Итог: <b>0</b>'
     
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
