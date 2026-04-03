@@ -577,7 +577,7 @@ def users_list_kb(users: list, page: int = 0):
 def edit_user_kb(user_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
-            text="Изменить баланс",
+            text="Пополнить баланс",
             callback_data=f"admin_edit_balance_{user_id}",
             icon_custom_emoji_id="5904462880941545555"
         )],
@@ -1449,7 +1449,6 @@ async def ask_new_balance(cq: CallbackQuery, state: FSMContext):
     text = (
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Текущий баланс: <b>{current_balance}</b> монет\n\n'
         f'Введите сумму которую хотите <b>добавить</b>:\n'
-        f'<i>Например: введите 3000 — станет {current_balance + 3000}</i>'
     )
 
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
