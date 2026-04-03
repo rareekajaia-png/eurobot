@@ -183,6 +183,9 @@ class AdminState(StatesGroup):
     editing_balance = State()
     sending_broadcast = State()
 
+class DonateState(StatesGroup):
+    entering_custom_amount = State()
+
 # ──────────────────────────────────────────────
 # ROULETTE LOGIC
 # ──────────────────────────────────────────────
@@ -434,6 +437,11 @@ def donate_kb():
         [InlineKeyboardButton(text="⭐ 500", callback_data="donate_500")],
         [InlineKeyboardButton(text="⭐ 1000", callback_data="donate_1000")],
         [InlineKeyboardButton(
+            text="Своя сумма",
+            callback_data="donate_custom",
+            icon_custom_emoji_id="5870676941614354370"  # 🖋
+        )],
+        [InlineKeyboardButton(
             text="Назад в меню",
             callback_data="back_main",
             icon_custom_emoji_id="5893057118545646106"
@@ -610,11 +618,72 @@ async def open_donate(cq: CallbackQuery):
 async def process_donation(cq: CallbackQuery):
     """Обработать выбор суммы для доната"""
     amount_str = cq.data.split("_")[1]
-    amount = int(amount_str)
+    
+    # Если это custom, перейти в режим ввода
+    if amount_str == "custom":
+        return
+    
+    try:
+        amount = int(amount_str)
+    except:
+        await cq.answer("❌ Некорректная сумма", show_alert=True)
+        return
     
     # Отправить инвойс для оплаты звездами
     await bot.send_invoice(
         chat_id=cq.from_user.id,
+        title="Поддержка разработчика",
+        description=f"Спасибо за {amount} ⭐! Это помогает развивать бота 💙",
+        payload=f"donate_{amount}",  # Уникальный payload для отслеживания
+        currency="XTR",  # XTR - Telegram Stars
+        prices=[LabeledPrice(label=f"Поддержка ({amount} ⭐)", amount=amount)],
+        provider_token="",  # Для Telegram Stars provider_token должен быть пустым
+    )
+
+
+@dp.callback_query(F.data == "donate_custom")
+async def ask_custom_donate_amount(cq: CallbackQuery, state: FSMContext):
+    """Запросить пользовательскую сумму для доната"""
+    await state.set_state(DonateState.entering_custom_amount)
+    await cq.message.edit_text(
+        '<tg-emoji emoji-id="5870676941614354370">🖋</tg-emoji> <b>Введите сумму в звездах (⭐)</b>\n\n'
+        'Минимум: 1 ⭐, максимум: 10000 ⭐',
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="Назад",
+                callback_data="donate",
+                icon_custom_emoji_id="5893057118545646106"
+            )]
+        ])
+    )
+
+
+@dp.message(DonateState.entering_custom_amount)
+async def process_custom_donate_amount(msg: Message, state: FSMContext):
+    """Обработать введенную сумму доната"""
+    try:
+        amount = int(msg.text.strip())
+        if amount < 1 or amount > 10000:
+            await msg.answer(
+                '<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Ошибка!</b>\n\n'
+                'Сумма должна быть от 1 до 10000 ⭐',
+                parse_mode="HTML"
+            )
+            return
+    except:
+        await msg.answer(
+            '<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Ошибка!</b>\n\n'
+            'Введите целое число от 1 до 10000',
+            parse_mode="HTML"
+        )
+        return
+    
+    await state.clear()
+    
+    # Отправить инвойс для оплаты звездами
+    await bot.send_invoice(
+        chat_id=msg.from_user.id,
         title="Поддержка разработчика",
         description=f"Спасибо за {amount} ⭐! Это помогает развивать бота 💙",
         payload=f"donate_{amount}",  # Уникальный payload для отслеживания
