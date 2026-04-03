@@ -157,6 +157,11 @@ def main_menu_kb():
             callback_data="open_roulette",
             icon_custom_emoji_id="5258882890059091157"   # 🎰
         )],
+        [InlineKeyboardButton(
+            text="Орёл и Решка",
+            callback_data="open_coin",
+            icon_custom_emoji_id="5774585885154131652"   # 🪙
+        )],
         [
             InlineKeyboardButton(
                 text="Баланс",
@@ -205,6 +210,19 @@ def bet_type_kb():
             callback_data="bet_number",
             icon_custom_emoji_id="5771851822897566479"   # 🔡
         )],
+        [InlineKeyboardButton(
+            text="Назад",
+            callback_data="back_main",
+            icon_custom_emoji_id="5893057118545646106"   # ◁
+        )],
+    ])
+
+def coin_side_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🦅 Орёл", callback_data="coin_heads"),
+            InlineKeyboardButton(text="🪙 Решка", callback_data="coin_tails"),
+        ],
         [InlineKeyboardButton(
             text="Назад",
             callback_data="back_main",
@@ -509,6 +527,157 @@ async def place_bet(cq: CallbackQuery, state: FSMContext):
     text = (
         f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Шарик остановился на:</b> {color} <b>{result}</b>\n\n'
         f'🎲 Ваша ставка: <b>{label}</b> — <b>{amount}</b> монет\n'
+        f'{outcome_text}\n\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{new_bal} монет</b>'
+    )
+
+    await state.clear()
+
+    if new_bal <= 0:
+        text += f'\n\n<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
+
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=main_menu_kb())
+
+
+# ──────────────────────────────────────────────
+# COIN FLIP GAME
+# ──────────────────────────────────────────────
+@dp.callback_query(F.data == "open_coin")
+async def open_coin(cq: CallbackQuery, state: FSMContext):
+    bal = get_balance(cq.from_user.id)
+    if bal <= 0:
+        await cq.answer("❌ У вас нет монет! Сбросьте баланс.", show_alert=True); return
+    await state.set_state(CoinState.choosing_side)
+    text = (
+        f'<tg-emoji emoji-id="5774585885154131652">🪙</tg-emoji> <b>Орёл и Решка</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>\n\n'
+        f'<b>Выберите сторону монеты:</b>'
+    )
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=coin_side_kb())
+
+
+@dp.callback_query(CoinState.choosing_side, F.data.startswith("coin_"))
+async def choose_coin_side(cq: CallbackQuery, state: FSMContext):
+    side_raw = cq.data.split("_")[1]  # "heads" или "tails"
+    side_label = "🦅 Орёл" if side_raw == "heads" else "🪙 Решка"
+    
+    await state.update_data(coin_choice=side_raw)
+    await state.set_state(CoinState.choosing_amount)
+    bal = get_balance(cq.from_user.id)
+    text = (
+        f'<tg-emoji emoji-id="5774585885154131652">🪙</tg-emoji> <b>Ставка: {side_label}</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>\n\n'
+        f'<b>Выберите сумму ставки:</b>'
+    )
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=bet_amount_kb(bal))
+
+
+@dp.callback_query(CoinState.choosing_amount, F.data == "amount_custom")
+async def ask_custom_coin_amount(cq: CallbackQuery, state: FSMContext):
+    await state.update_data(waiting_custom=True)
+    bal = get_balance(cq.from_user.id)
+    await cq.message.edit_text(
+        f'<tg-emoji emoji-id="5870676941614354370">🖋</tg-emoji> <b>Введите сумму ставки:</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>',
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="Назад",
+                callback_data="back_main",
+                icon_custom_emoji_id="5893057118545646106"
+            )]
+        ])
+    )
+
+
+@dp.message(CoinState.choosing_amount)
+async def handle_coin_amount_input(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    coin_choice = data.get("coin_choice", "")
+
+    if data.get("waiting_custom"):
+        bal = get_balance(msg.from_user.id)
+        try:
+            amount = int(msg.text.strip())
+            assert 1 <= amount <= bal
+        except:
+            await msg.answer(f"❗ Введите целое число от <b>1</b> до <b>{bal}</b>.", parse_mode="HTML")
+            return
+
+        result = flip_coin()
+        won = check_coin_bet(coin_choice, result)
+
+        side_label = "🦅 Орёл" if coin_choice == "heads" else "🪙 Решка"
+        result_label = "🦅 Орёл" if result == "heads" else "🪙 Решка"
+
+        if won:
+            profit = amount * 2  # 2x payout for coin flip
+            update_balance(msg.from_user.id, profit, win=True)
+            outcome_text = (
+                f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>ПОБЕДА!</b>\n'
+                f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{profit} монет (x2)'
+            )
+        else:
+            update_balance(msg.from_user.id, -amount, win=False)
+            outcome_text = (
+                f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Поражение.</b>\n'
+                f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{amount} монет'
+            )
+
+        new_bal = get_balance(msg.from_user.id)
+        text = (
+            f'<tg-emoji emoji-id="5774585885154131652">🪙</tg-emoji> <b>Результат:</b> {result_label}\n\n'
+            f'🎲 Ваша ставка: <b>{side_label}</b> — <b>{amount}</b> монет\n'
+            f'{outcome_text}\n\n'
+            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{new_bal} монет</b>'
+        )
+
+        await state.clear()
+
+        if new_bal <= 0:
+            text += f'\n\n<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
+
+        await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
+        return
+
+
+@dp.callback_query(CoinState.choosing_amount, F.data.startswith("amount_"))
+async def place_coin_bet(cq: CallbackQuery, state: FSMContext):
+    amount = int(cq.data.split("_")[1])
+    data = await state.get_data()
+    coin_choice = data.get("coin_choice", "")
+
+    if not coin_choice:
+        await cq.answer("Сначала выберите сторону монеты.", show_alert=True); return
+
+    bal = get_balance(cq.from_user.id)
+    if amount > bal:
+        await cq.answer("❌ Недостаточно средств!", show_alert=True); return
+
+    result = flip_coin()
+    won = check_coin_bet(coin_choice, result)
+
+    side_label = "🦅 Орёл" if coin_choice == "heads" else "🪙 Решка"
+    result_label = "🦅 Орёл" if result == "heads" else "🪙 Решка"
+
+    if won:
+        profit = amount * 2  # 2x payout for coin flip
+        update_balance(cq.from_user.id, profit, win=True)
+        outcome_text = (
+            f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>ПОБЕДА!</b>\n'
+            f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{profit} монет (x2)'
+        )
+    else:
+        update_balance(cq.from_user.id, -amount, win=False)
+        outcome_text = (
+            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Поражение.</b>\n'
+            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{amount} монет'
+        )
+
+    new_bal = get_balance(cq.from_user.id)
+    text = (
+        f'<tg-emoji emoji-id="5774585885154131652">🪙</tg-emoji> <b>Результат:</b> {result_label}\n\n'
+        f'🎲 Ваша ставка: <b>{side_label}</b> — <b>{amount}</b> монет\n'
         f'{outcome_text}\n\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{new_bal} монет</b>'
     )
