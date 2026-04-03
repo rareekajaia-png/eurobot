@@ -8,7 +8,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -90,6 +90,22 @@ def reset_balance(user_id: int):
                 (STARTING_BALANCE, user_id)
             )
 
+def get_all_users_full():
+    """Получить всех пользователей с полной информацией"""
+    with db_connect() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM users ORDER BY user_id")
+            return cur.fetchall()
+
+def set_balance(user_id: int, amount: int):
+    """Установить баланс пользователю (админ функция)"""
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET balance = %s WHERE user_id=%s",
+                (amount, user_id)
+            )
+
 
 # ──────────────────────────────────────────────
 # FSM
@@ -101,6 +117,12 @@ class BetState(StatesGroup):
 class CoinState(StatesGroup):
     choosing_side = State()
     choosing_amount = State()
+
+class AdminState(StatesGroup):
+    choosing_action = State()
+    choosing_user = State()
+    editing_balance = State()
+    sending_broadcast = State()
 
 # ──────────────────────────────────────────────
 # ROULETTE LOGIC
@@ -163,11 +185,6 @@ def main_menu_kb():
             icon_custom_emoji_id="5774585885154131652"   # 🪙
         )],
         [
-            InlineKeyboardButton(
-                text="Баланс",
-                callback_data="balance",
-                icon_custom_emoji_id="5904462880941545555"   # 🪙
-            ),
             InlineKeyboardButton(
                 text="Статистика",
                 callback_data="stats",
@@ -286,6 +303,88 @@ BET_LABELS = {
 }
 
 # ──────────────────────────────────────────────
+# ADMIN KEYBOARDS
+# ──────────────────────────────────────────────
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # Добавь ADMIN_ID в .env
+
+def admin_menu_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="Список пользователей",
+            callback_data="admin_users",
+            icon_custom_emoji_id="5870772616305839506"  # 👥
+        )],
+        [InlineKeyboardButton(
+            text="Рассылка сообщения",
+            callback_data="admin_broadcast",
+            icon_custom_emoji_id="6039422865189638057"  # 📣
+        )],
+        [InlineKeyboardButton(
+            text="Вернуться в меню",
+            callback_data="back_main",
+            icon_custom_emoji_id="5893057118545646106"  # 📰
+        )],
+    ])
+
+def users_list_kb(users: list, page: int = 0):
+    """Создать клавиатуру со списком пользователей (постраничная)"""
+    per_page = 5
+    start_idx = page * per_page
+    end_idx = start_idx + per_page
+    page_users = users[start_idx:end_idx]
+    
+    buttons = []
+    for user in page_users:
+        user_id = user['user_id']
+        username = user['username'] or f"ID {user_id}"
+        balance = user['balance']
+        buttons.append([InlineKeyboardButton(
+            text=f"{username} ({balance} монет)",
+            callback_data=f"admin_edit_user_{user_id}",
+            icon_custom_emoji_id="5870994129244131212"  # 👤
+        )])
+    
+    # Навигация
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(
+            text="Назад",
+            callback_data=f"admin_users_page_{page-1}",
+            icon_custom_emoji_id="5893057118545646106"  # 📰
+        ))
+    if end_idx < len(users):
+        nav_buttons.append(InlineKeyboardButton(
+            text="Вперед",
+            callback_data=f"admin_users_page_{page+1}",
+            icon_custom_emoji_id="5893057118545646106"  # 📰
+        ))
+    
+    if nav_buttons:
+        buttons.append(nav_buttons)
+    
+    buttons.append([InlineKeyboardButton(
+        text="В меню админа",
+        callback_data="admin_back",
+        icon_custom_emoji_id="5893057118545646106"  # 📰
+    )])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def edit_user_kb(user_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="Изменить баланс",
+            callback_data=f"admin_edit_balance_{user_id}",
+            icon_custom_emoji_id="5904462880941545555"  # 🪙
+        )],
+        [InlineKeyboardButton(
+            text="Назад к списку",
+            callback_data="admin_users_back",
+            icon_custom_emoji_id="5893057118545646106"  # 📰
+        )],
+    ])
+
+# ──────────────────────────────────────────────
 # HANDLERS
 # ──────────────────────────────────────────────
 @dp.message(CommandStart())
@@ -315,7 +414,7 @@ async def back_main(cq: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "balance")
 async def show_balance(cq: CallbackQuery):
     bal = get_balance(cq.from_user.id)
-    await cq.answer(f"💰 Ваш баланс: {bal} монет", show_alert=True)
+    await cq.answer(f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ваш баланс: {bal} монет', show_alert=True)
 
 
 @dp.callback_query(F.data == "stats")
@@ -341,7 +440,10 @@ async def show_stats(cq: CallbackQuery):
 async def reset_handler(cq: CallbackQuery, state: FSMContext):
     reset_balance(cq.from_user.id)   # wins/losses не трогаем
     await state.clear()
-    await cq.answer("✅ Баланс сброшен до 1000 монет!", show_alert=True)
+    await cq.answer(
+        f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Баланс сброшен до 1000 монет!',
+        show_alert=True
+    )
     await cq.message.edit_text(
         f'<tg-emoji emoji-id="5345906554510012647">🔄</tg-emoji> <b>Баланс сброшен!</b>\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>1000 монет</b>',
@@ -354,7 +456,11 @@ async def reset_handler(cq: CallbackQuery, state: FSMContext):
 async def open_roulette(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
     if bal <= 0:
-        await cq.answer("❌ У вас нет монет! Сбросьте баланс.", show_alert=True); return
+        await cq.answer(
+            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> У вас нет монет! Сбросьте баланс.',
+            show_alert=True
+        )
+        return
     await state.set_state(BetState.choosing_bet_type)
     text = (
         f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Европейская Рулетка</b>\n'
@@ -496,11 +602,19 @@ async def place_bet(cq: CallbackQuery, state: FSMContext):
     bet_type = data.get("bet_type", "")
 
     if not bet_type or bet_type == "pending_number":
-        await cq.answer("Сначала выберите тип ставки.", show_alert=True); return
+        await cq.answer(
+            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Сначала выберите тип ставки.',
+            show_alert=True
+        )
+        return
 
     bal = get_balance(cq.from_user.id)
     if amount > bal:
-        await cq.answer("❌ Недостаточно средств!", show_alert=True); return
+        await cq.answer(
+            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Недостаточно средств!',
+            show_alert=True
+        )
+        return
 
     result = spin_wheel()
     color  = number_color(result)
@@ -546,7 +660,11 @@ async def place_bet(cq: CallbackQuery, state: FSMContext):
 async def open_coin(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
     if bal <= 0:
-        await cq.answer("❌ У вас нет монет! Сбросьте баланс.", show_alert=True); return
+        await cq.answer(
+            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> У вас нет монет! Сбросьте баланс.',
+            show_alert=True
+        )
+        return
     await state.set_state(CoinState.choosing_side)
     text = (
         f'<tg-emoji emoji-id="5774585885154131652">🪙</tg-emoji> <b>Орёл и Решка</b>\n'
@@ -648,11 +766,19 @@ async def place_coin_bet(cq: CallbackQuery, state: FSMContext):
     coin_choice = data.get("coin_choice", "")
 
     if not coin_choice:
-        await cq.answer("Сначала выберите сторону монеты.", show_alert=True); return
+        await cq.answer(
+            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Сначала выберите сторону монеты.',
+            show_alert=True
+        )
+        return
 
     bal = get_balance(cq.from_user.id)
     if amount > bal:
-        await cq.answer("❌ Недостаточно средств!", show_alert=True); return
+        await cq.answer(
+            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Недостаточно средств!',
+            show_alert=True
+        )
+        return
 
     result = flip_coin()
     won = check_coin_bet(coin_choice, result)
@@ -688,6 +814,223 @@ async def place_coin_bet(cq: CallbackQuery, state: FSMContext):
         text += f'\n\n<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
 
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=main_menu_kb())
+
+
+# ──────────────────────────────────────────────
+# ADMIN PANEL
+# ──────────────────────────────────────────────
+@dp.message(Command("admin"))
+async def cmd_admin(msg: Message, state: FSMContext):
+    """Команда /admin - доступна только администратору"""
+    if msg.from_user.id != ADMIN_ID:
+        await msg.answer("❌ У вас нет доступа к админ-панели")
+        return
+    
+    await state.set_state(AdminState.choosing_action)
+    text = "<b>🔧 Админ-панель</b>\n\nВыберите действие:"
+    await msg.answer(text, parse_mode="HTML", reply_markup=admin_menu_kb())
+
+
+@dp.callback_query(F.data == "admin_users")
+async def show_users_list(cq: CallbackQuery, state: FSMContext):
+    """Показать список пользователей"""
+    if cq.from_user.id != ADMIN_ID:
+        await cq.answer(
+            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Только админ может это делать',
+            show_alert=True
+        )
+        return
+    
+    await state.set_state(AdminState.choosing_user)
+    users = get_all_users_full()
+    
+    text = f"<b>👥 Список пользователей:</b>\n\nВсего: {len(users)} пользователей\n\n"
+    text += "Выберите пользователя для редактирования:"
+    
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=users_list_kb(users, 0))
+
+
+@dp.callback_query(F.data.startswith("admin_users_page_"))
+async def paginate_users(cq: CallbackQuery, state: FSMContext):
+    """Навигация по странам пользователей"""
+    if cq.from_user.id != ADMIN_ID:
+        return
+    
+    page = int(cq.data.split("_")[-1])
+    users = get_all_users_full()
+    
+    text = f"<b>👥 Список пользователей:</b>\n\nВсего: {len(users)} пользователей\n\n"
+    text += "Выберите пользователя для редактирования:"
+    
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=users_list_kb(users, page))
+
+
+@dp.callback_query(F.data.startswith("admin_edit_user_"))
+async def edit_user_menu(cq: CallbackQuery, state: FSMContext):
+    """Меню редактирования пользователя"""
+    if cq.from_user.id != ADMIN_ID:
+        return
+    
+    user_id = int(cq.data.split("_")[-1])
+    row = get_user(user_id)
+    
+    if not row:
+        await cq.answer(
+            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Пользователь не найден',
+            show_alert=True
+        )
+        return
+    
+    _, username, balance, wins, losses = row
+    text = (
+        f"<b>👤 Профиль пользователя:</b>\n\n"
+        f"ID: <code>{user_id}</code>\n"
+        f"Имя: <b>{username or 'Неизвестно'}</b>\n"
+        f"💰 Баланс: <b>{balance}</b> монет\n"
+        f"✅ Побед: <b>{wins}</b>\n"
+        f"❌ Поражений: <b>{losses}</b>\n\n"
+        f"Выберите действие:"
+    )
+    
+    await state.update_data(admin_user_id=user_id)
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=edit_user_kb(user_id))
+
+
+@dp.callback_query(F.data.startswith("admin_edit_balance_"))
+async def ask_new_balance(cq: CallbackQuery, state: FSMContext):
+    """Запросить новый баланс"""
+    if cq.from_user.id != ADMIN_ID:
+        return
+    
+    user_id = int(cq.data.split("_")[-1])
+    await state.update_data(admin_user_id=user_id)
+    await state.set_state(AdminState.editing_balance)
+    
+    current_balance = get_balance(user_id)
+    text = (
+        f"💰 Введите новый баланс для пользователя (текущий: <b>{current_balance}</b>):\n\n"
+        f"<i>Только число, пожалуйста</i>"
+    )
+    
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_users_back")]
+    ]))
+
+
+@dp.message(AdminState.editing_balance)
+async def process_new_balance(msg: Message, state: FSMContext):
+    """Обработать ввод нового баланса"""
+    if msg.from_user.id != ADMIN_ID:
+        return
+    
+    try:
+        new_balance = int(msg.text.strip())
+        assert new_balance >= 0
+    except:
+        await msg.answer("❌ Введите корректное число (больше или равно 0)")
+        return
+    
+    data = await state.get_data()
+    user_id = data.get("admin_user_id")
+    
+    set_balance(user_id, new_balance)
+    
+    user = get_user(user_id)
+    _, username, _, _, _ = user
+    
+    text = (
+        f"✅ <b>Баланс обновлён!</b>\n\n"
+        f"Пользователь: <b>{username or 'Неизвестно'}</b> (ID: {user_id})\n"
+        f"Новый баланс: <b>{new_balance}</b> монет"
+    )
+    
+    await state.clear()
+    await msg.answer(text, parse_mode="HTML", reply_markup=admin_menu_kb())
+
+
+@dp.callback_query(F.data == "admin_broadcast")
+async def broadcast_menu(cq: CallbackQuery, state: FSMContext):
+    """Меню рассылки сообщений"""
+    if cq.from_user.id != ADMIN_ID:
+        await cq.answer(
+            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Только админ может это делать',
+            show_alert=True
+        )
+        return
+    
+    users = get_all_users_full()
+    text = (
+        f"📢 <b>Рассылка сообщений</b>\n\n"
+        f"Адресатов: {len(users)} пользователей\n\n"
+        f"Введите сообщение, которое нужно отправить всем пользователям:\n\n"
+        f"<i>Поддерживает HTML форматирование</i>"
+    )
+    
+    await state.set_state(AdminState.sending_broadcast)
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Отмена", callback_data="admin_back")]
+    ]))
+
+
+@dp.message(AdminState.sending_broadcast)
+async def process_broadcast(msg: Message, state: FSMContext):
+    """Отправить сообщение всем пользователям"""
+    if msg.from_user.id != ADMIN_ID:
+        return
+    
+    broadcast_text = msg.text
+    users = get_all_users_full()
+    
+    success_count = 0
+    fail_count = 0
+    
+    for user in users:
+        user_id = user['user_id']
+        try:
+            await bot.send_message(
+                user_id,
+                f"📢 <b>Сообщение от администратора:</b>\n\n{broadcast_text}",
+                parse_mode="HTML"
+            )
+            success_count += 1
+        except Exception as e:
+            fail_count += 1
+    
+    text = (
+        f"✅ <b>Рассылка завершена!</b>\n\n"
+        f"Успешно отправлено: <b>{success_count}</b>\n"
+        f"Ошибок: <b>{fail_count}</b>"
+    )
+    
+    await state.clear()
+    await msg.answer(text, parse_mode="HTML", reply_markup=admin_menu_kb())
+
+
+@dp.callback_query(F.data == "admin_back")
+async def admin_back_to_menu(cq: CallbackQuery, state: FSMContext):
+    """Вернуться в меню админа"""
+    if cq.from_user.id != ADMIN_ID:
+        return
+    
+    await state.clear()
+    await state.set_state(AdminState.choosing_action)
+    text = "<b>🔧 Админ-панель</b>\n\nВыберите действие:"
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=admin_menu_kb())
+
+
+@dp.callback_query(F.data == "admin_users_back")
+async def admin_back_to_users(cq: CallbackQuery, state: FSMContext):
+    """Вернуться в список пользователей"""
+    if cq.from_user.id != ADMIN_ID:
+        return
+    
+    await state.set_state(AdminState.choosing_user)
+    users = get_all_users_full()
+    
+    text = f"<b>👥 Список пользователей:</b>\n\nВсего: {len(users)} пользователей\n\n"
+    text += "Выберите пользователя для редактирования:"
+    
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=users_list_kb(users, 0))
 
 
 # ──────────────────────────────────────────────
