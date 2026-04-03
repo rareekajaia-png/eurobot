@@ -291,7 +291,7 @@ def main_menu_kb():
             icon_custom_emoji_id="5774585885154131652"
         )],
         [InlineKeyboardButton(
-            text="Ракета",
+            text="🚀 Ракета",
             callback_data="open_rocket",
         )],
         [
@@ -602,7 +602,7 @@ async def cmd_start(msg: Message, state: FSMContext):
         f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Добро пожаловать в Казино!</b>\n\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ваш баланс: <b>{bal} монет</b>\n\n'
         f'<tg-emoji emoji-id="5778672437122045013">📦</tg-emoji> Нажми на:\n'
-        f'<blockquote>"Рулетка" или "Орёл или Решка" или "Ракета" чтобы играть</blockquote>'
+        f'<blockquote>"Рулетка" или "Орёл или Решка" чтобы играть</blockquote>'
     )
     await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
 
@@ -1447,9 +1447,9 @@ async def ask_new_balance(cq: CallbackQuery, state: FSMContext):
 
     current_balance = get_balance(user_id)
     text = (
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Введите новый баланс для пользователя '
-        f'(текущий: <b>{current_balance}</b>):\n\n'
-        f'<i>Только число, пожалуйста</i>'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Текущий баланс: <b>{current_balance}</b> монет\n\n'
+        f'Введите сумму которую хотите <b>добавить</b>:\n'
+        f'<i>Например: введите 3000 — станет {current_balance + 3000}</i>'
     )
 
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -1479,7 +1479,9 @@ async def process_new_balance(msg: Message, state: FSMContext):
     data = await state.get_data()
     user_id = data.get("admin_user_id")
 
-    set_balance(user_id, new_balance)
+    old_balance = get_balance(user_id)
+    new_total = old_balance + new_balance
+    set_balance(user_id, new_total)
 
     user = get_user(user_id)
     _, username, _, _, _ = user
@@ -1487,7 +1489,9 @@ async def process_new_balance(msg: Message, state: FSMContext):
     text = (
         f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> <b>Баланс обновлён!</b>\n\n'
         f'<tg-emoji emoji-id="5870994129244131212">👤</tg-emoji> Пользователь: <b>{username or "Неизвестно"}</b> (ID: {user_id})\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{new_balance}</b> монет'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Было: <b>{old_balance}</b> монет\n'
+        f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> Добавлено: <b>+{new_balance}</b> монет\n'
+        f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Итого: <b>{new_total}</b> монет'
     )
 
     await state.clear()
