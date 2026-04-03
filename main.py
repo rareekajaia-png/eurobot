@@ -217,6 +217,16 @@ def get_user_history_stats(user_id: int):
     finally:
         db_release(conn)
 
+def clear_all_history():
+    """Удалить всю историю ставок."""
+    conn = db_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM history")
+        conn.commit()
+    finally:
+        db_release(conn)
+
 
 class BetState(StatesGroup):
     choosing_bet_type = State()
@@ -467,6 +477,11 @@ def admin_menu_kb():
             text="Рассылка сообщения",
             callback_data="admin_broadcast",
             icon_custom_emoji_id="6039422865189638057"
+        )],
+        [InlineKeyboardButton(
+            text="Очистить историю",
+            callback_data="admin_clear_history",
+            icon_custom_emoji_id="5870657884844462243"
         )],
         [InlineKeyboardButton(
             text="Вернуться в меню",
@@ -1586,6 +1601,26 @@ async def admin_back_to_menu(cq: CallbackQuery, state: FSMContext):
         'Выберите действие:'
     )
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=admin_menu_kb())
+
+
+@dp.callback_query(F.data == "admin_clear_history")
+async def admin_clear_history(cq: CallbackQuery):
+    if cq.from_user.id != ADMIN_ID:
+        return
+
+    clear_all_history()
+    text = (
+        '✅ <b>История ставок очищена!</b>\n\n'
+        'Все записи из таблицы history удалены.'
+    )
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="Назад в админ-панель",
+            callback_data="admin_back",
+            icon_custom_emoji_id="5893057118545646106"
+        )],
+    ]))
+    await cq.answer("История очищена", show_alert=True)
 
 
 @dp.callback_query(F.data == "admin_users_back")
