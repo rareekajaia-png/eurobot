@@ -82,12 +82,14 @@ def add_daily_bonus(user_id: int):
             cur.execute("UPDATE users SET balance = balance + 500 WHERE user_id=%s", (user_id,))
 
 def reset_balance(user_id: int):
+    # Сбрасываем только баланс, wins/losses остаются
     with db_connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE users SET balance=%s, wins=0, losses=0 WHERE user_id=%s",
+                "UPDATE users SET balance = %s WHERE user_id=%s",
                 (STARTING_BALANCE, user_id)
             )
+
 
 # ──────────────────────────────────────────────
 # FSM
@@ -137,10 +139,28 @@ def payout_multiplier(bet_type: str) -> int:
 # ──────────────────────────────────────────────
 def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎰 Рулетка", callback_data="open_roulette")],
-        [InlineKeyboardButton(text="💰 Баланс",  callback_data="balance"),
-         InlineKeyboardButton(text="📊 Статистика", callback_data="stats")],
-        [InlineKeyboardButton(text="🔄 Сбросить баланс", callback_data="reset")],
+        [InlineKeyboardButton(
+            text="Рулетка",
+            callback_data="open_roulette",
+            icon_custom_emoji_id="5258882890059091157"   # 🎰
+        )],
+        [
+            InlineKeyboardButton(
+                text="Баланс",
+                callback_data="balance",
+                icon_custom_emoji_id="5904462880941545555"   # 🪙
+            ),
+            InlineKeyboardButton(
+                text="Статистика",
+                callback_data="stats",
+                icon_custom_emoji_id="5870921681735781843"   # 📊
+            ),
+        ],
+        [InlineKeyboardButton(
+            text="Сбросить баланс",
+            callback_data="reset",
+            icon_custom_emoji_id="5345906554510012647"   # 🔄
+        )],
     ])
 
 def bet_type_kb():
@@ -154,7 +174,7 @@ def bet_type_kb():
             InlineKeyboardButton(text="19-36", callback_data="bet_19-36"),
         ],
         [
-            InlineKeyboardButton(text="ЧЁТНОЕ",  callback_data="bet_even"),
+            InlineKeyboardButton(text="ЧЁТНОЕ",   callback_data="bet_even"),
             InlineKeyboardButton(text="НЕЧЁТНОЕ", callback_data="bet_odd"),
         ],
         [
@@ -167,8 +187,16 @@ def bet_type_kb():
             InlineKeyboardButton(text="2to1 (ряд 2)", callback_data="bet_2to1_2"),
             InlineKeyboardButton(text="2to1 (ряд 3)", callback_data="bet_2to1_3"),
         ],
-        [InlineKeyboardButton(text="🔢 Конкретное число (x35)", callback_data="bet_number")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")],
+        [InlineKeyboardButton(
+            text="Конкретное число (x35)",
+            callback_data="bet_number",
+            icon_custom_emoji_id="5771851822897566479"   # 🔡
+        )],
+        [InlineKeyboardButton(
+            text="Назад",
+            callback_data="back_main",
+            icon_custom_emoji_id="5893057118545646106"   # ◁
+        )],
     ])
 
 def fmt(n: int) -> str:
@@ -184,15 +212,27 @@ def bet_amount_kb(balance: int):
     q4 = balance
     buttons = [
         [
-            InlineKeyboardButton(text=f"25%  ({fmt(q1)})", callback_data=f"amount_{q1}"),
-            InlineKeyboardButton(text=f"75%  ({fmt(q3)})", callback_data=f"amount_{q3}"),
+            InlineKeyboardButton(text=f"25%  ({fmt(q1)})",  callback_data=f"amount_{q1}"),
+            InlineKeyboardButton(text=f"75%  ({fmt(q3)})",  callback_data=f"amount_{q3}"),
         ],
         [
-            InlineKeyboardButton(text=f"50%  ({fmt(q2)})", callback_data=f"amount_{q2}"),
-            InlineKeyboardButton(text=f"🔥 Ва-банк ({fmt(q4)})", callback_data=f"amount_{q4}"),
+            InlineKeyboardButton(text=f"50%  ({fmt(q2)})",  callback_data=f"amount_{q2}"),
+            InlineKeyboardButton(
+                text=f"Ва-банк ({fmt(q4)})",
+                callback_data=f"amount_{q4}",
+                icon_custom_emoji_id="6041731551845159060"   # 🎉
+            ),
         ],
-        [InlineKeyboardButton(text="✏️ Ввести вручную", callback_data="amount_custom")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_bet_type")],
+        [InlineKeyboardButton(
+            text="Ввести вручную",
+            callback_data="amount_custom",
+            icon_custom_emoji_id="5870676941614354370"   # 🖋
+        )],
+        [InlineKeyboardButton(
+            text="Назад",
+            callback_data="back_bet_type",
+            icon_custom_emoji_id="5893057118545646106"   # ◁
+        )],
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -223,9 +263,9 @@ async def cmd_start(msg: Message, state: FSMContext):
     bal = get_balance(msg.from_user.id)
     await state.clear()
     text = (
-        f"🎰 <b>Добро пожаловать в Европейскую Рулетку!</b>\n\n"
-        f"💰 Ваш стартовый баланс: <b>{bal} монет</b>\n\n"
-        f"<i>Нажмите «Рулетка», чтобы начать игру.</i>"
+        f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Добро пожаловать в Европейскую Рулетку!</b>\n\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ваш стартовый баланс: <b>{bal} монет</b>\n\n'
+        f'<i>Нажмите «Рулетка», чтобы начать игру.</i>'
     )
     await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
 
@@ -235,8 +275,8 @@ async def back_main(cq: CallbackQuery, state: FSMContext):
     await state.clear()
     bal = get_balance(cq.from_user.id)
     text = (
-        f"🎰 <b>Европейская Рулетка</b>\n"
-        f"💰 Баланс: <b>{bal} монет</b>"
+        f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Европейская Рулетка</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>'
     )
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=main_menu_kb())
 
@@ -256,24 +296,26 @@ async def show_stats(cq: CallbackQuery):
     total = wins + losses
     rate = round(wins / total * 100, 1) if total else 0
     text = (
-        f"📊 <b>Статистика</b>\n\n"
-        f"👤 Игрок: <b>{username or 'Неизвестно'}</b>\n"
-        f"💰 Баланс: <b>{balance}</b> монет\n"
-        f"✅ Побед:  <b>{wins}</b>\n"
-        f"❌ Поражений: <b>{losses}</b>\n"
-        f"🎯 Процент побед: <b>{rate}%</b>"
+        f'<tg-emoji emoji-id="5870921681735781843">📊</tg-emoji> <b>Статистика</b>\n\n'
+        f'<tg-emoji emoji-id="5870994129244131212">👤</tg-emoji> Игрок: <b>{username or "Неизвестно"}</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{balance}</b> монет\n'
+        f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Побед: <b>{wins}</b>\n'
+        f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Поражений: <b>{losses}</b>\n'
+        f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Процент побед: <b>{rate}%</b>'
     )
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=main_menu_kb())
 
 
 @dp.callback_query(F.data == "reset")
 async def reset_handler(cq: CallbackQuery, state: FSMContext):
-    reset_balance(cq.from_user.id)
+    reset_balance(cq.from_user.id)   # wins/losses не трогаем
     await state.clear()
     await cq.answer("✅ Баланс сброшен до 1000 монет!", show_alert=True)
     await cq.message.edit_text(
-        "🔄 <b>Баланс сброшен!</b>\n💰 Новый баланс: <b>1000 монет</b>",
-        parse_mode="HTML", reply_markup=main_menu_kb()
+        f'<tg-emoji emoji-id="5345906554510012647">🔄</tg-emoji> <b>Баланс сброшен!</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>1000 монет</b>',
+        parse_mode="HTML",
+        reply_markup=main_menu_kb()
     )
 
 
@@ -284,9 +326,9 @@ async def open_roulette(cq: CallbackQuery, state: FSMContext):
         await cq.answer("❌ У вас нет монет! Сбросьте баланс.", show_alert=True); return
     await state.set_state(BetState.choosing_bet_type)
     text = (
-        f"🎰 <b>Европейская Рулетка</b>\n"
-        f"💰 Баланс: <b>{bal} монет</b>\n\n"
-        f"<b>Выберите тип ставки:</b>"
+        f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Европейская Рулетка</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>\n\n'
+        f'<b>Выберите тип ставки:</b>'
     )
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=bet_type_kb())
 
@@ -299,10 +341,14 @@ async def choose_bet_type(cq: CallbackQuery, state: FSMContext):
         await state.update_data(bet_type="pending_number")
         await state.set_state(BetState.choosing_amount)
         await cq.message.edit_text(
-            "🔢 <b>Введите число от 0 до 36:</b>",
+            '<tg-emoji emoji-id="5771851822897566479">🔡</tg-emoji> <b>Введите число от 0 до 36:</b>',
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="◀️ Назад", callback_data="back_bet_type")]
+                [InlineKeyboardButton(
+                    text="Назад",
+                    callback_data="back_bet_type",
+                    icon_custom_emoji_id="5893057118545646106"
+                )]
             ])
         )
         return
@@ -312,9 +358,9 @@ async def choose_bet_type(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
     label = BET_LABELS.get(raw, raw)
     text = (
-        f"🎰 <b>Ставка: {label}</b>\n"
-        f"💰 Баланс: <b>{bal} монет</b>\n\n"
-        f"<b>Выберите сумму ставки:</b>"
+        f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Ставка: {label}</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>\n\n'
+        f'<b>Выберите сумму ставки:</b>'
     )
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=bet_amount_kb(bal))
 
@@ -324,9 +370,9 @@ async def back_bet_type(cq: CallbackQuery, state: FSMContext):
     await state.set_state(BetState.choosing_bet_type)
     bal = get_balance(cq.from_user.id)
     text = (
-        f"🎰 <b>Европейская Рулетка</b>\n"
-        f"💰 Баланс: <b>{bal} монет</b>\n\n"
-        f"<b>Выберите тип ставки:</b>"
+        f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Европейская Рулетка</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>\n\n'
+        f'<b>Выберите тип ставки:</b>'
     )
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=bet_type_kb())
 
@@ -352,21 +398,27 @@ async def handle_number_input(msg: Message, state: FSMContext):
         if won:
             profit = amount * mult
             update_balance(msg.from_user.id, profit, win=True)
-            outcome_text = f"🎉 <b>ПОБЕДА!</b>\n💵 +{profit} монет (x{mult})"
+            outcome_text = (
+                f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>ПОБЕДА!</b>\n'
+                f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{profit} монет (x{mult})'
+            )
         else:
             update_balance(msg.from_user.id, -amount, win=False)
-            outcome_text = f"😔 <b>Поражение.</b>\n💸 -{amount} монет"
+            outcome_text = (
+                f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Поражение.</b>\n'
+                f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{amount} монет'
+            )
         new_bal = get_balance(msg.from_user.id)
         label = BET_LABELS.get(bet_type, bet_type.replace("num_", "число "))
         text = (
-            f"🎰 <b>Шарик остановился на:</b> {color} <b>{result}</b>\n\n"
-            f"🎲 Ваша ставка: <b>{label}</b> — <b>{amount}</b> монет\n"
-            f"{outcome_text}\n\n"
-            f"💰 Новый баланс: <b>{new_bal} монет</b>"
+            f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Шарик остановился на:</b> {color} <b>{result}</b>\n\n'
+            f'🎲 Ваша ставка: <b>{label}</b> — <b>{amount}</b> монет\n'
+            f'{outcome_text}\n\n'
+            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{new_bal} монет</b>'
         )
         await state.clear()
         if new_bal <= 0:
-            text += "\n\n❌ <b>Вы банкрот!</b> Нажмите «Сбросить баланс»."
+            text += f'\n\n<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
         await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
         return
 
@@ -382,8 +434,8 @@ async def handle_number_input(msg: Message, state: FSMContext):
     await state.update_data(bet_type=f"num_{n}")
     bal = get_balance(msg.from_user.id)
     await msg.answer(
-        f"🔢 <b>Ставка на число {n}</b> (выплата x35)\n"
-        f"💰 Баланс: <b>{bal} монет</b>\n\n<b>Выберите сумму ставки:</b>",
+        f'<tg-emoji emoji-id="5771851822897566479">🔡</tg-emoji> <b>Ставка на число {n}</b> (выплата x35)\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>\n\n<b>Выберите сумму ставки:</b>',
         parse_mode="HTML",
         reply_markup=bet_amount_kb(bal)
     )
@@ -394,10 +446,15 @@ async def ask_custom_amount(cq: CallbackQuery, state: FSMContext):
     await state.update_data(waiting_custom=True)
     bal = get_balance(cq.from_user.id)
     await cq.message.edit_text(
-        f"✏️ <b>Введите сумму ставки:</b>\n💰 Баланс: <b>{bal} монет</b>",
+        f'<tg-emoji emoji-id="5870676941614354370">🖋</tg-emoji> <b>Введите сумму ставки:</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>',
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_bet_type")]
+            [InlineKeyboardButton(
+                text="Назад",
+                callback_data="back_bet_type",
+                icon_custom_emoji_id="5893057118545646106"
+            )]
         ])
     )
 
@@ -423,27 +480,30 @@ async def place_bet(cq: CallbackQuery, state: FSMContext):
         profit = amount * mult
         update_balance(cq.from_user.id, profit, win=True)
         outcome_text = (
-            f"🎉 <b>ПОБЕДА!</b>\n"
-            f"💵 +{profit} монет (x{mult})"
+            f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>ПОБЕДА!</b>\n'
+            f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{profit} монет (x{mult})'
         )
     else:
         update_balance(cq.from_user.id, -amount, win=False)
-        outcome_text = f"😔 <b>Поражение.</b>\n💸 -{amount} монет"
+        outcome_text = (
+            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Поражение.</b>\n'
+            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{amount} монет'
+        )
 
     new_bal = get_balance(cq.from_user.id)
     label   = BET_LABELS.get(bet_type, bet_type.replace("num_", "число "))
 
     text = (
-        f"🎰 <b>Шарик остановился на:</b> {color} <b>{result}</b>\n\n"
-        f"🎲 Ваша ставка: <b>{label}</b> — <b>{amount}</b> монет\n"
-        f"{outcome_text}\n\n"
-        f"💰 Новый баланс: <b>{new_bal} монет</b>"
+        f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Шарик остановился на:</b> {color} <b>{result}</b>\n\n'
+        f'🎲 Ваша ставка: <b>{label}</b> — <b>{amount}</b> монет\n'
+        f'{outcome_text}\n\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{new_bal} монет</b>'
     )
 
     await state.clear()
 
     if new_bal <= 0:
-        text += "\n\n❌ <b>Вы банкрот!</b> Нажмите «Сбросить баланс»."
+        text += f'\n\n<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
 
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=main_menu_kb())
 
@@ -468,10 +528,10 @@ async def daily_bonus_task():
             try:
                 await bot.send_message(
                     user_id,
-                    f"🎁 <b>Ежедневный бонус!</b>\n\n"
-                    f"💰 Вам начислено <b>+500 монет</b>\n"
-                    f"💳 Текущий баланс: <b>{new_bal} монет</b>\n\n"
-                    f"<i>Удачной игры! 🎰</i>",
+                    f'<tg-emoji emoji-id="6032644646587338669">🎁</tg-emoji> <b>Ежедневный бонус!</b>\n\n'
+                    f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> Вам начислено <b>+500 монет</b>\n'
+                    f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Текущий баланс: <b>{new_bal} монет</b>\n\n'
+                    f'<i>Удачной игры! 🎰</i>',
                     parse_mode="HTML"
                 )
             except Exception:
