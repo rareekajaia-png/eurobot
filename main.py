@@ -210,7 +210,7 @@ def get_user_history_stats(user_id: int):
                    COUNT(CASE WHEN is_win THEN 1 END) as win_count,
                    COUNT(CASE WHEN NOT is_win THEN 1 END) as lose_count
                    FROM history
-                   WHERE user_id=%s""",
+                   WHERE user_id=%s AND game_type != 'admin_topup'""",
                 (user_id,)
             )
             return cur.fetchone()
