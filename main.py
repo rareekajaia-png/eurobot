@@ -693,12 +693,12 @@ async def show_history(cq: CallbackQuery):
                 game_name = "Монета"
             elif entry['game_type'] == "rocket":
                 game_name = "Ракета"
+            elif entry['game_type'] == "admin_topup":
+                game_name = "Пополнение от админа"
             else:
                 game_name = "Рулетка"
             sign = '+' if entry['is_win'] else '-'
             text += f'{status_emoji} {sign}{entry["amount"]} - {game_name}\n'
-
-    text += f'\n<tg-emoji emoji-id="5870921681735781843">📊</tg-emoji> <b>Статистика по истории:</b>\n'
     stats = get_user_history_stats(user_id)
     if stats and stats['win_count']:
         total_won = stats['total_won'] or 0
@@ -1432,6 +1432,8 @@ async def admin_show_user_history(cq: CallbackQuery):
                 game_name = "Монета"
             elif entry['game_type'] == "rocket":
                 game_name = "Ракета"
+            elif entry['game_type'] == "admin_topup":
+                game_name = "Пополнение от админа"
             else:
                 game_name = "Рулетка"
             sign = '+' if entry['is_win'] else '-'
@@ -1504,6 +1506,7 @@ async def process_new_balance(msg: Message, state: FSMContext):
     old_balance = get_balance(user_id)
     new_total = old_balance + new_balance
     set_balance(user_id, new_total)
+    add_history(user_id, new_balance, True, game_type="admin_topup")
  
     user = get_user(user_id)
     _, username, _, _, _ = user
