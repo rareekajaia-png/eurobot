@@ -251,6 +251,7 @@ class RocketState(StatesGroup):
 
 class MinesweeperState(StatesGroup):
     choosing_amount = State()
+    choosing_mines = State()
     in_game = State()
 
 RED_NUMBERS   = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
@@ -625,7 +626,7 @@ async def cmd_start(msg: Message, state: FSMContext):
         f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Добро пожаловать в Казино!</b>\n\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ваш баланс: <b>{bal} монет</b>\n\n'
         f'<tg-emoji emoji-id="5778672437122045013">📦</tg-emoji> Нажми на:\n'
-        f'<blockquote>"Рулетка" или "Орёл или Решка" или "Ракета" или "Сапер" чтобы играть</blockquote>'
+        f'<blockquote>"Рулетка";"Орёл или Решка";"Ракета";"Сапер" чтобы играть</blockquote>'
     )
     await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
 
@@ -1759,19 +1760,15 @@ async def minesweeper_set_amount(cq: CallbackQuery, state: FSMContext):
         await cq.answer("Недостаточно средств!", show_alert=True)
         return
     
-    field = generate_minesweeper_field(size=5, mines=5)
-    revealed = [[False for _ in range(5)] for _ in range(5)]
+    await state.set_state(MinesweeperState.choosing_mines)
+    await state.update_data(minesweeper_amount=amount)
     
-    await state.set_state(MinesweeperState.in_game)
-    await state.update_data(
-        minesweeper_amount=amount,
-        minesweeper_field=field,
-        minesweeper_revealed=revealed,
-        minesweeper_opened=0
+    text = (
+        f"💣 <b>Выбери количество мин</b>\n\n"
+        f"💰 Ставка: <b>{amount} монет</b>\n\n"
+        f"Больше мин — выше множитель и больше риск!"
     )
-    
-    text = _minesweeper_text(amount, field, revealed)
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=_minesweeper_kb(revealed))
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=_minesweeper_mines_kb())
     await cq.answer()
 
 
@@ -1788,28 +1785,55 @@ async def minesweeper_custom_amount(msg: Message, state: FSMContext):
         await msg.answer(f"❗ Введите целое число от <b>1</b> до <b>{bal}</b>.", parse_mode="HTML")
         return
     
-    field = generate_minesweeper_field(size=5, mines=5)
+    await state.set_state(MinesweeperState.choosing_mines)
+    await state.update_data(minesweeper_amount=amount, waiting_custom=False)
+    
+    text = (
+        f"💣 <b>Выбери количество мин</b>\n\n"
+        f"💰 Ставка: <b>{amount} монет</b>\n\n"
+        f"Больше мин — выше множитель и больше риск!"
+    )
+    await msg.answer(text, parse_mode="HTML", reply_markup=_minesweeper_mines_kb())
+
+
+@dp.callback_query(MinesweeperState.choosing_mines, F.data.startswith("ms_mines_"))
+async def minesweeper_start_game(cq: CallbackQuery, state: FSMContext):
+    mines_count = int(cq.data.split("_")[-1])
+    
+    data = await state.get_data()
+    amount = data.get("minesweeper_amount", 0)
+    
+    field = generate_minesweeper_field(size=5, mines=mines_count)
     revealed = [[False for _ in range(5)] for _ in range(5)]
     
     await state.set_state(MinesweeperState.in_game)
     await state.update_data(
-        minesweeper_amount=amount,
         minesweeper_field=field,
         minesweeper_revealed=revealed,
-        minesweeper_opened=0,
-        waiting_custom=False
+        minesweeper_mines=mines_count
     )
     
-    text = _minesweeper_text(amount, field, revealed)
-    await msg.answer(text, parse_mode="HTML", reply_markup=_minesweeper_kb(revealed))
+    text = _minesweeper_text(amount, field, revealed, mines_count)
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=_minesweeper_kb(revealed))
+    await cq.answer()
 
 
-def _minesweeper_text(amount: int, field: list, revealed: list) -> str:
-    multiplier = 1.0 + (sum(sum(row) for row in revealed) * 0.3)
+def _minesweeper_text(amount: int, field: list, revealed: list, mines: int = 5) -> str:
+    """Генерирует текст для поля Сапера. mines указывает базовый множитель"""
+    base_multipliers = {
+        3: 1.5,
+        5: 2.0,
+        7: 3.0,
+        10: 5.0
+    }
+    base_mult = base_multipliers.get(mines, 2.0)
+    opened_count = sum(sum(row) for row in revealed)
+    multiplier = base_mult * (1.0 + (opened_count * 0.1))
     potential = int(amount * multiplier)
     text = (
         f"💣 <b>Сапер</b>\n\n"
         f"💸 Ставка: <b>{amount} монет</b>\n"
+        f"💣 Мин: <b>{mines}</b>\n"
         f"📈 Множитель: <b>x{multiplier:.2f}</b>\n"
         f"💰 Можно забрать: <b>{potential} монет</b>\n\n"
         f"<b>Откроется ячейки:</b>\n"
@@ -1827,6 +1851,25 @@ def _minesweeper_text(amount: int, field: list, revealed: list) -> str:
         text += "\n"
     
     return text
+
+
+def _minesweeper_mines_kb() -> InlineKeyboardMarkup:
+    """Клавиатура для выбора количества мин"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="3 мины (x1.5)", callback_data="ms_mines_3"),
+            InlineKeyboardButton(text="5 мин (x2.0)", callback_data="ms_mines_5"),
+        ],
+        [
+            InlineKeyboardButton(text="7 мин (x3.0)", callback_data="ms_mines_7"),
+            InlineKeyboardButton(text="10 мин (x5.0)", callback_data="ms_mines_10"),
+        ],
+        [InlineKeyboardButton(
+            text="Назад",
+            callback_data="back_main",
+            icon_custom_emoji_id="5893057118545646106"
+        )],
+    ])
 
 
 def _minesweeper_kb(revealed: list) -> InlineKeyboardMarkup:
@@ -1864,6 +1907,7 @@ async def minesweeper_open_cell(cq: CallbackQuery, state: FSMContext):
     field = data.get("minesweeper_field", [])
     revealed = data.get("minesweeper_revealed", [])
     amount = data.get("minesweeper_amount", 0)
+    mines_count = data.get("minesweeper_mines", 5)
     
     if (row < 0 or row >= 5 or col < 0 or col >= 5 or revealed[row][col]):
         await cq.answer("Эта ячейка уже открыта!", show_alert=False)
@@ -1887,7 +1931,7 @@ async def minesweeper_open_cell(cq: CallbackQuery, state: FSMContext):
         ]))
     else:
         await state.update_data(minesweeper_revealed=revealed)
-        text = _minesweeper_text(amount, field, revealed)
+        text = _minesweeper_text(amount, field, revealed, mines_count)
         await cq.message.edit_text(text, parse_mode="HTML", reply_markup=_minesweeper_kb(revealed))
     
     await cq.answer()
@@ -1900,8 +1944,17 @@ async def minesweeper_cashout(cq: CallbackQuery, state: FSMContext):
     
     amount = data.get("minesweeper_amount", 0)
     revealed = data.get("minesweeper_revealed", [])
+    mines_count = data.get("minesweeper_mines", 5)
     opened_count = sum(sum(row) for row in revealed)
-    multiplier = 1.0 + (opened_count * 0.3)
+    
+    base_multipliers = {
+        3: 1.5,
+        5: 2.0,
+        7: 3.0,
+        10: 5.0
+    }
+    base_mult = base_multipliers.get(mines_count, 2.0)
+    multiplier = base_mult * (1.0 + (opened_count * 0.1))
     
     total_payout = int(amount * multiplier)
     net_profit = total_payout - amount
