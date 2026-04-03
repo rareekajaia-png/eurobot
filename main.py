@@ -1772,6 +1772,24 @@ async def minesweeper_set_amount(cq: CallbackQuery, state: FSMContext):
     await cq.answer()
 
 
+@dp.callback_query(MinesweeperState.choosing_amount, F.data == "amount_custom")
+async def minesweeper_amount_custom_cb(cq: CallbackQuery, state: FSMContext):
+    await state.update_data(waiting_custom=True)
+    bal = get_balance(cq.from_user.id)
+    await cq.message.edit_text(
+        f'<tg-emoji emoji-id="5870676941614354370">🖋</tg-emoji> <b>Введите сумму ставки:</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>',
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="Назад",
+                callback_data="back_bet_type",
+                icon_custom_emoji_id="5893057118545646106"
+            )]
+        ])
+    )
+
+
 @dp.message(MinesweeperState.choosing_amount)
 async def minesweeper_custom_amount(msg: Message, state: FSMContext):
     data = await state.get_data()
