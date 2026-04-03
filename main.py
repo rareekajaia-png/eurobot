@@ -1,12 +1,11 @@
 import asyncio
 import random
-import psycopg2
-from psycopg2.extras import RealDictCursor
-DATABASE_URL = os.getenv("DATABASE_URL")
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 from dotenv import load_dotenv
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import CommandStart
@@ -16,6 +15,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 STARTING_BALANCE = 1000
 
 bot = Bot(token=TOKEN)
@@ -123,16 +123,14 @@ def check_bet(bet_type: str, number: int) -> bool:
     if bet_type == "2to1_1": return number in {1,4,7,10,13,16,19,22,25,28,31,34}
     if bet_type == "2to1_2": return number in {2,5,8,11,14,17,20,23,26,29,32,35}
     if bet_type == "2to1_3": return number in {3,6,9,12,15,18,21,24,27,30,33,36}
-    # straight number
     if bet_type.startswith("num_"):
         return number == int(bet_type[4:])
     return False
 
 def payout_multiplier(bet_type: str) -> int:
-    """Returns net multiplier (win returns bet * multiplier back)."""
     if bet_type.startswith("num_"): return 35
     if bet_type in ("1st12","2nd12","3rd12","2to1_1","2to1_2","2to1_3"): return 2
-    return 1  # even-money bets
+    return 1
 
 # ──────────────────────────────────────────────
 # KEYBOARDS
@@ -152,8 +150,8 @@ def bet_type_kb():
             InlineKeyboardButton(text="⬛ Чёрное",   callback_data="bet_black"),
         ],
         [
-            InlineKeyboardButton(text="  1-18",  callback_data="bet_1-18"),
-            InlineKeyboardButton(text=" 19-36", callback_data="bet_19-36"),
+            InlineKeyboardButton(text="1-18",  callback_data="bet_1-18"),
+            InlineKeyboardButton(text="19-36", callback_data="bet_19-36"),
         ],
         [
             InlineKeyboardButton(text="ЧЁТНОЕ",  callback_data="bet_even"),
@@ -188,24 +186,8 @@ def bet_amount_kb(balance: int):
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # ──────────────────────────────────────────────
-# HTML HELPERS
+# BET LABELS
 # ──────────────────────────────────────────────
-def render_table(result: int) -> str:
-    rows = [
-        [3,6,9,12,15,18,21,24,27,30,33,36],
-        [2,5,8,11,14,17,20,23,26,29,32,35],
-        [1,4,7,10,13,16,19,22,25,28,31,34],
-    ]
-    lines = []
-    for row in rows:
-        cells = []
-        for n in row:
-            color = "🔴" if n in RED_NUMBERS else "⚫"
-            tag = f"[{color}{n}]" if n == result else f" {n} "
-            cells.append(tag)
-        lines.append("  " + " ".join(cells))
-    return "\n".join(lines)
-
 BET_LABELS = {
     "red":    "🟥 Красное",
     "black":  "⬛ Чёрное",
@@ -284,7 +266,6 @@ async def reset_handler(cq: CallbackQuery, state: FSMContext):
     )
 
 
-# ── OPEN ROULETTE ──
 @dp.callback_query(F.data == "open_roulette")
 async def open_roulette(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
@@ -299,10 +280,9 @@ async def open_roulette(cq: CallbackQuery, state: FSMContext):
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=bet_type_kb())
 
 
-# ── CHOOSE BET TYPE ──
 @dp.callback_query(BetState.choosing_bet_type, F.data.startswith("bet_"))
 async def choose_bet_type(cq: CallbackQuery, state: FSMContext):
-    raw = cq.data[4:]   # strip "bet_"
+    raw = cq.data[4:]
 
     if raw == "number":
         await state.update_data(bet_type="pending_number")
@@ -340,12 +320,10 @@ async def back_bet_type(cq: CallbackQuery, state: FSMContext):
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=bet_type_kb())
 
 
-# ── STRAIGHT NUMBER INPUT ──
 @dp.message(BetState.choosing_amount)
 async def handle_number_input(msg: Message, state: FSMContext):
     data = await state.get_data()
 
-    # Ввод суммы вручную
     if data.get("waiting_custom"):
         bal = get_balance(msg.from_user.id)
         try:
@@ -355,9 +333,9 @@ async def handle_number_input(msg: Message, state: FSMContext):
             await msg.answer(f"❗ Введите целое число от <b>1</b> до <b>{bal}</b>.", parse_mode="HTML")
             return
         await state.update_data(waiting_custom=False)
-        # запускаем спин напрямую
         bet_type = data.get("bet_type", "")
-        won  = check_bet(bet_type, result := spin_wheel())
+        result = spin_wheel()
+        won  = check_bet(bet_type, result)
         mult = payout_multiplier(bet_type)
         color = number_color(result)
         if won:
@@ -400,7 +378,6 @@ async def handle_number_input(msg: Message, state: FSMContext):
     )
 
 
-# ── CHOOSE AMOUNT & SPIN ──
 @dp.callback_query(BetState.choosing_amount, F.data == "amount_custom")
 async def ask_custom_amount(cq: CallbackQuery, state: FSMContext):
     await state.update_data(waiting_custom=True)
@@ -426,7 +403,6 @@ async def place_bet(cq: CallbackQuery, state: FSMContext):
     if amount > bal:
         await cq.answer("❌ Недостаточно средств!", show_alert=True); return
 
-    # SPIN
     result = spin_wheel()
     color  = number_color(result)
     won    = check_bet(bet_type, result)
@@ -462,22 +438,18 @@ async def place_bet(cq: CallbackQuery, state: FSMContext):
 
 
 # ──────────────────────────────────────────────
-# MAIN
+# DAILY BONUS
 # ──────────────────────────────────────────────
 async def daily_bonus_task():
     msk = pytz.timezone("Europe/Moscow")
     while True:
         now = datetime.now(msk)
-        # ждём до следующего 12:00 МСК
         target = now.replace(hour=12, minute=0, second=0, microsecond=0)
         if now >= target:
-            # уже прошло 12:00 сегодня — ждём завтра
-            from datetime import timedelta
             target += timedelta(days=1)
         wait_seconds = (target - now).total_seconds()
         await asyncio.sleep(wait_seconds)
 
-        # рассылаем бонус всем
         users = get_all_users()
         for user_id in users:
             add_daily_bonus(user_id)
@@ -492,10 +464,13 @@ async def daily_bonus_task():
                     parse_mode="HTML"
                 )
             except Exception:
-                pass  # пользователь заблокировал бота
+                pass
 
-        await asyncio.sleep(60)  # защита от двойного срабатывания
+        await asyncio.sleep(60)
 
+# ──────────────────────────────────────────────
+# MAIN
+# ──────────────────────────────────────────────
 async def main():
     init_db()
     print("🎰 Roulette bot started!")
