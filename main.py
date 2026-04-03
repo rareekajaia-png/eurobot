@@ -9,7 +9,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2 import pool
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery, ShippingQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -76,18 +76,6 @@ def get_user(user_id: int):
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM users WHERE user_id=%s", (user_id,))
             return cur.fetchone()
-    finally:
-        db_release(conn)
-
-def create_user(user_id: int, username: str):
-    conn = db_connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO users (user_id, username, balance) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
-                (user_id, username, STARTING_BALANCE)
-            )
-        conn.commit()
     finally:
         db_release(conn)
 
@@ -569,7 +557,7 @@ async def cmd_start(msg: Message, state: FSMContext):
     text = (
         f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Добро пожаловать в Казино!</b>\n\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ваш баланс: <b>{bal} монет</b>\n\n'
-        f'Нажми на:\n'
+        f'<tg-emoji emoji-id="6028435952299413210">ℹ</tg-emoji>Нажми на:\n'
         f'<blockquote>Рулетка или Орёл и Решка чтобы играть</blockquote>'
     )
     await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
@@ -1498,7 +1486,7 @@ async def process_broadcast(msg: Message, state: FSMContext):
                 parse_mode="HTML"
             )
             success_count += 1
-        except Exception as e:
+        except Exception:
             fail_count += 1
     
     text = (
