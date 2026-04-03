@@ -21,12 +21,8 @@ STARTING_BALANCE = 1000
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# Глобальное хранилище последних ставок для повтора
 last_bets = {}  # {user_id: {'game': 'coin'/'roulette', 'choice'/'bet_type': ..., 'amount': ...}}
 
-# ──────────────────────────────────────────────
-# DATABASE
-# ──────────────────────────────────────────────
 def db_connect():
     return psycopg2.connect(DATABASE_URL)
 
@@ -79,7 +75,6 @@ def update_balance(user_id: int, delta: int, win: bool, game_type: str = "roulet
                 f"UPDATE users SET balance = balance + %s, {col} = {col} + 1 WHERE user_id=%s",
                 (delta, user_id)
             )
-    # Добавляем запись в историю
     add_history(user_id, abs(delta), win, game_type)
 
 def get_balance(user_id: int) -> int:
@@ -101,7 +96,6 @@ def add_daily_bonus(user_id: int):
             cur.execute("UPDATE users SET balance = balance + 500 WHERE user_id=%s", (user_id,))
 
 def reset_balance(user_id: int):
-    # Сбрасываем только баланс, wins/losses остаются
     with db_connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -166,9 +160,6 @@ def get_user_history_stats(user_id: int):
             return cur.fetchone()
 
 
-# ──────────────────────────────────────────────
-# FSM
-# ──────────────────────────────────────────────
 class BetState(StatesGroup):
     choosing_bet_type = State()
     choosing_amount   = State()
@@ -186,9 +177,6 @@ class AdminState(StatesGroup):
 class DonateState(StatesGroup):
     entering_custom_amount = State()
 
-# ──────────────────────────────────────────────
-# ROULETTE LOGIC
-# ──────────────────────────────────────────────
 RED_NUMBERS   = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
 BLACK_NUMBERS = {2,4,6,8,10,11,13,15,17,20,22,24,26,28,29,31,33,35}
 
@@ -222,18 +210,12 @@ def payout_multiplier(bet_type: str) -> int:
     if bet_type in ("1st12","2nd12","3rd12","2to1_1","2to1_2","2to1_3"): return 2
     return 1
 
-# ──────────────────────────────────────────────
-# COIN (ОРЕЛ И РЕШКА)
-# ──────────────────────────────────────────────
 def flip_coin() -> str:
     return random.choice(["heads", "tails"])
 
 def check_coin_bet(choice: str, result: str) -> bool:
     return choice == result
 
-# ──────────────────────────────────────────────
-# KEYBOARDS
-# ──────────────────────────────────────────────
 def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
@@ -351,9 +333,6 @@ def bet_amount_kb(balance: int):
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# ──────────────────────────────────────────────
-# BET LABELS
-# ──────────────────────────────────────────────
 BET_LABELS = {
     "red":    "🟥 Красное",
     "black":  "⬛ Чёрное",
@@ -369,10 +348,7 @@ BET_LABELS = {
     "2to1_3": "2to1 (ряд 3)",
 }
 
-# ──────────────────────────────────────────────
-# ADMIN KEYBOARDS
-# ──────────────────────────────────────────────
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # Добавь ADMIN_ID в .env
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 def admin_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -466,7 +442,6 @@ def users_list_kb(users: list, page: int = 0):
             icon_custom_emoji_id="5870994129244131212"  # 👤
         )])
     
-    # Навигация
     nav_buttons = []
     if page > 0:
         nav_buttons.append(InlineKeyboardButton(
@@ -511,9 +486,6 @@ def edit_user_kb(user_id: int):
         )],
     ])
 
-# ──────────────────────────────────────────────
-# HANDLERS
-# ──────────────────────────────────────────────
 @dp.message(CommandStart())
 async def cmd_start(msg: Message, state: FSMContext):
     create_user(msg.from_user.id, msg.from_user.username or "игрок")
@@ -625,15 +597,14 @@ async def process_donation(cq: CallbackQuery):
         await cq.answer("❌ Некорректная сумма", show_alert=True)
         return
     
-    # Отправить инвойс для оплаты звездами
     await bot.send_invoice(
         chat_id=cq.from_user.id,
         title="Поддержка разработчика",
         description=f"Спасибо за {amount} ⭐! Это помогает развивать бота 💙",
-        payload=f"donate_{amount}",  # Уникальный payload для отслеживания
-        currency="XTR",  # XTR - Telegram Stars
+        payload=f"donate_{amount}",
+        currency="XTR",
         prices=[LabeledPrice(label=f"Поддержка ({amount} ⭐)", amount=amount)],
-        provider_token="",  # Для Telegram Stars provider_token должен быть пустым
+        provider_token="",
     )
 
 
@@ -677,15 +648,14 @@ async def process_custom_donate_amount(msg: Message, state: FSMContext):
     
     await state.clear()
     
-    # Отправить инвойс для оплаты звездами
     await bot.send_invoice(
         chat_id=msg.from_user.id,
         title="Поддержка разработчика",
         description=f"Спасибо за {amount} ⭐! Это помогает развивать бота 💙",
-        payload=f"donate_{amount}",  # Уникальный payload для отслеживания
-        currency="XTR",  # XTR - Telegram Stars
+        payload=f"donate_{amount}",
+        currency="XTR",
         prices=[LabeledPrice(label=f"Поддержка ({amount} ⭐)", amount=amount)],
-        provider_token="",  # Для Telegram Stars provider_token должен быть пустым
+        provider_token="",
     )
 
 
@@ -705,9 +675,6 @@ async def reset_handler(cq: CallbackQuery, state: FSMContext):
     )
 
 
-# ──────────────────────────────────────────────
-# PAYMENT HANDLERS
-# ──────────────────────────────────────────────
 @dp.pre_checkout_query()
 async def process_pre_checkout_query(pre_checkout_query: PreCheckoutQuery):
     """Обработать pre-checkout запрос (подтверждение перед платежом)"""
@@ -718,8 +685,6 @@ async def process_pre_checkout_query(pre_checkout_query: PreCheckoutQuery):
 async def process_successful_payment(msg: Message):
     """Обработать успешный платеж"""
     payment = msg.successful_payment
-    
-    # Извлечь сумму звезд из payload
     payload = payment.invoice_payload
     if not payload.startswith("donate_"):
         return
@@ -727,7 +692,6 @@ async def process_successful_payment(msg: Message):
     amount_str = payload.split("_")[1]
     amount = int(amount_str)
     
-    # Просто отправить спасибо, без добавления монет
     text = (
         f'<tg-emoji emoji-id="6041731551845159060">🙏</tg-emoji> <b>Спасибо за {amount} звезд!</b>\n\n'
         f'Ваша поддержка очень важна для развития бота! 💙'
@@ -812,7 +776,6 @@ async def handle_number_input(msg: Message, state: FSMContext):
         await state.update_data(waiting_custom=False)
         bet_type = data.get("bet_type", "")
         
-        # Сохранить информацию о ставке для функции повтора
         last_bets[msg.from_user.id] = {'game': 'roulette', 'bet_type': bet_type, 'amount': amount}
         
         result = spin_wheel()
@@ -903,7 +866,6 @@ async def place_bet(cq: CallbackQuery, state: FSMContext):
         )
         return
 
-    # Сохранить информацию о ставке для функции повтора
     last_bets[cq.from_user.id] = {'game': 'roulette', 'bet_type': bet_type, 'amount': amount}
 
     result = spin_wheel()
@@ -943,9 +905,6 @@ async def place_bet(cq: CallbackQuery, state: FSMContext):
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=game_result_kb("roulette"))
 
 
-# ──────────────────────────────────────────────
-# COIN FLIP GAME
-# ──────────────────────────────────────────────
 @dp.callback_query(F.data == "open_coin")
 async def open_coin(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
@@ -1012,7 +971,6 @@ async def handle_coin_amount_input(msg: Message, state: FSMContext):
             await msg.answer(f"❗ Введите целое число от <b>1</b> до <b>{bal}</b>.", parse_mode="HTML")
             return
 
-        # Сохранить информацию о ставке для функции повтора
         last_bets[msg.from_user.id] = {'game': 'coin', 'choice': coin_choice, 'amount': amount}
 
         result = flip_coin()
@@ -1073,7 +1031,6 @@ async def place_coin_bet(cq: CallbackQuery, state: FSMContext):
         )
         return
 
-    # Сохранить информацию о ставке для функции повтора
     last_bets[cq.from_user.id] = {'game': 'coin', 'choice': coin_choice, 'amount': amount}
 
     result = flip_coin()
@@ -1112,15 +1069,11 @@ async def place_coin_bet(cq: CallbackQuery, state: FSMContext):
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=game_result_kb("coin"))
 
 
-# ──────────────────────────────────────────────
-# REPEAT GAME HANDLERS
-# ──────────────────────────────────────────────
 @dp.callback_query(F.data == "repeat_roulette")
 async def repeat_roulette(cq: CallbackQuery, state: FSMContext):
     """Повторить игру в рулетку с той же ставкой"""
     user_id = cq.from_user.id
     
-    # Получить сохраненную информацию о последней ставке
     if user_id not in last_bets or last_bets[user_id].get('game') != 'roulette':
         await cq.answer("ℹ️ Нет сохраненной ставки, выберите новую.", show_alert=False)
         return
@@ -1129,7 +1082,6 @@ async def repeat_roulette(cq: CallbackQuery, state: FSMContext):
     bet_type = bet_data.get('bet_type')
     amount = bet_data.get('amount')
     
-    # Проверить баланс
     bal = get_balance(user_id)
     if amount > bal:
         await cq.answer(
@@ -1138,7 +1090,6 @@ async def repeat_roulette(cq: CallbackQuery, state: FSMContext):
         )
         return
     
-    # Выполнить ставку с теми же параметрами
     result = spin_wheel()
     color  = number_color(result)
     won    = check_bet(bet_type, result)
@@ -1179,7 +1130,6 @@ async def repeat_coin(cq: CallbackQuery, state: FSMContext):
     """Повторить игру в орла и решку с той же ставкой"""
     user_id = cq.from_user.id
     
-    # Получить сохраненную информацию о последней ставке
     if user_id not in last_bets or last_bets[user_id].get('game') != 'coin':
         await cq.answer("ℹ️ Нет сохраненной ставки, выберите новую.", show_alert=False)
         return
@@ -1188,7 +1138,6 @@ async def repeat_coin(cq: CallbackQuery, state: FSMContext):
     coin_choice = bet_data.get('choice')
     amount = bet_data.get('amount')
     
-    # Проверить баланс
     bal = get_balance(user_id)
     if amount > bal:
         await cq.answer(
@@ -1197,7 +1146,6 @@ async def repeat_coin(cq: CallbackQuery, state: FSMContext):
         )
         return
     
-    # Выполнить ставку с теми же параметрами
     result = flip_coin()
     won = check_coin_bet(coin_choice, result)
 
@@ -1232,9 +1180,6 @@ async def repeat_coin(cq: CallbackQuery, state: FSMContext):
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=game_result_kb("coin"))
 
 
-# ──────────────────────────────────────────────
-# ADMIN PANEL
-# ──────────────────────────────────────────────
 @dp.message(Command("admin"))
 async def cmd_admin(msg: Message, state: FSMContext):
     """Команда /admin - доступна только администратору"""
@@ -1502,9 +1447,6 @@ async def admin_back_to_users(cq: CallbackQuery, state: FSMContext):
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=users_list_kb(users, 0))
 
 
-# ──────────────────────────────────────────────
-# DAILY BONUS
-# ──────────────────────────────────────────────
 async def daily_bonus_task():
     msk = pytz.timezone("Europe/Moscow")
     while True:
@@ -1533,9 +1475,6 @@ async def daily_bonus_task():
  
         await asyncio.sleep(60)
 
-# ──────────────────────────────────────────────
-# MAIN
-# ──────────────────────────────────────────────
 async def main():
     init_db()
     print("🎰 Roulette bot started!")
