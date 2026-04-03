@@ -7,6 +7,7 @@ import pytz
 from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from psycopg2 import pool
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery, ShippingQuery
 from aiogram.filters import CommandStart, Command
@@ -22,13 +23,20 @@ STARTING_BALANCE = 1000
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
+# Пул соединений для оптимизации
+db_pool = pool.SimpleConnectionPool(1, 10, DATABASE_URL)
+
 last_bets = {}  # {user_id: {'game': 'coin'/'roulette', 'choice'/'bet_type': ..., 'amount': ...}}
 
 def db_connect():
-    return psycopg2.connect(DATABASE_URL)
+    return db_pool.getconn()
+
+def db_release(conn):
+    db_pool.putconn(conn)
 
 def init_db():
-    with db_connect() as conn:
+    conn = db_connect()
+    try:
         with conn.cursor() as cur:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -53,86 +61,126 @@ def init_db():
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_history_user_id ON history(user_id)
             """)
+        conn.commit()
+    finally:
+        db_release(conn)
 
 def get_user(user_id: int):
-    with db_connect() as conn:
+    conn = db_connect()
+    try:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM users WHERE user_id=%s", (user_id,))
             return cur.fetchone()
+    finally:
+        db_release(conn)
 
 def create_user(user_id: int, username: str):
-    with db_connect() as conn:
+    conn = db_connect()
+    try:
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO users (user_id, username, balance) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
                 (user_id, username, STARTING_BALANCE)
             )
+        conn.commit()
+    finally:
+        db_release(conn)
 
 def update_balance(user_id: int, delta: int, win: bool, game_type: str = "roulette"):
     col = "wins" if win else "losses"
-    with db_connect() as conn:
+    conn = db_connect()
+    try:
         with conn.cursor() as cur:
             cur.execute(
                 f"UPDATE users SET balance = balance + %s, {col} = {col} + 1 WHERE user_id=%s",
                 (delta, user_id)
             )
+        conn.commit()
+    finally:
+        db_release(conn)
     add_history(user_id, abs(delta), win, game_type)
 
 def get_balance(user_id: int) -> int:
-    with db_connect() as conn:
+    conn = db_connect()
+    try:
         with conn.cursor() as cur:
             cur.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,))
             row = cur.fetchone()
-    return row[0] if row else 0
+        return row[0] if row else 0
+    finally:
+        db_release(conn)
 
 def get_all_users():
-    with db_connect() as conn:
+    conn = db_connect()
+    try:
         with conn.cursor() as cur:
             cur.execute("SELECT user_id FROM users")
             return [r[0] for r in cur.fetchall()]
+    finally:
+        db_release(conn)
 
 def add_daily_bonus(user_id: int):
-    with db_connect() as conn:
+    conn = db_connect()
+    try:
         with conn.cursor() as cur:
             cur.execute("UPDATE users SET balance = balance + 500 WHERE user_id=%s", (user_id,))
+        conn.commit()
+    finally:
+        db_release(conn)
 
 def reset_balance(user_id: int):
-    with db_connect() as conn:
+    conn = db_connect()
+    try:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE users SET balance = %s WHERE user_id=%s",
                 (STARTING_BALANCE, user_id)
             )
+        conn.commit()
+    finally:
+        db_release(conn)
 
 def get_all_users_full():
     """Получить всех пользователей с полной информацией"""
-    with db_connect() as conn:
+    conn = db_connect()
+    try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT * FROM users ORDER BY user_id")
             return cur.fetchall()
+    finally:
+        db_release(conn)
 
 def set_balance(user_id: int, amount: int):
     """Установить баланс пользователю (админ функция)"""
-    with db_connect() as conn:
+    conn = db_connect()
+    try:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE users SET balance = %s WHERE user_id=%s",
                 (amount, user_id)
             )
+        conn.commit()
+    finally:
+        db_release(conn)
 
 def add_history(user_id: int, amount: int, is_win: bool, game_type: str = "roulette"):
     """Добавить запись в историю ставок"""
-    with db_connect() as conn:
+    conn = db_connect()
+    try:
         with conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO history (user_id, amount, is_win, game_type)
                    VALUES (%s, %s, %s, %s)""",
                 (user_id, amount, is_win, game_type)
             )
+        conn.commit()
+    finally:
+        db_release(conn)
 
 def get_history(user_id: int, limit: int = 10):
     """Получить последние ставки пользователя"""
-    with db_connect() as conn:
+    conn = db_connect()
+    try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """SELECT amount, is_win, game_type, created_at
@@ -143,10 +191,13 @@ def get_history(user_id: int, limit: int = 10):
                 (user_id, limit)
             )
             return cur.fetchall()
+    finally:
+        db_release(conn)
 
 def get_user_history_stats(user_id: int):
     """Получить статистику по истории (выигрыши/проигрыши)"""
-    with db_connect() as conn:
+    conn = db_connect()
+    try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """SELECT 
@@ -159,6 +210,8 @@ def get_user_history_stats(user_id: int):
                 (user_id,)
             )
             return cur.fetchone()
+    finally:
+        db_release(conn)
 
 
 class BetState(StatesGroup):
@@ -1495,7 +1548,12 @@ async def main():
     init_db()
     print("🎰 Roulette bot started!")
     asyncio.create_task(daily_bonus_task())
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        # Закрываем пул соединений при завершении
+        db_pool.closeall()
+        print("🗄️ Database connection pool closed")
 
 if __name__ == "__main__":
     try:
