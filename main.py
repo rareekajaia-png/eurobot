@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery, ShippingQuery
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -251,6 +251,11 @@ def main_menu_kb():
             ),
         ],
         [InlineKeyboardButton(
+            text="Получить звезды ⭐",
+            callback_data="donate",
+            icon_custom_emoji_id="5904462880941545555"  # 💫
+        )],
+        [InlineKeyboardButton(
             text="Сбросить баланс",
             callback_data="reset",
             icon_custom_emoji_id="5345906554510012647"   # 🔄
@@ -420,6 +425,21 @@ def game_result_kb(game_type: str):
         )],
     ])
 
+def donate_kb():
+    """Клавиатура с вариантами донатов"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⭐ 50", callback_data="donate_50")],
+        [InlineKeyboardButton(text="⭐ 100", callback_data="donate_100")],
+        [InlineKeyboardButton(text="⭐ 250", callback_data="donate_250")],
+        [InlineKeyboardButton(text="⭐ 500", callback_data="donate_500")],
+        [InlineKeyboardButton(text="⭐ 1000", callback_data="donate_1000")],
+        [InlineKeyboardButton(
+            text="Назад в меню",
+            callback_data="back_main",
+            icon_custom_emoji_id="5893057118545646106"
+        )],
+    ])
+
 def users_list_kb(users: list, page: int = 0):
     """Создать клавиатуру со списком пользователей (постраничная)"""
     per_page = 5
@@ -575,6 +595,54 @@ async def show_history(cq: CallbackQuery):
     ]))
 
 
+@dp.callback_query(F.data == "donate")
+async def open_donate(cq: CallbackQuery):
+    """Открыть меню доната"""
+    text = (
+        '<tg-emoji emoji-id="5258882890059091157">💫</tg-emoji> <b>Получите звезды!</b>\n\n'
+        'Выберите количество звезд для пополнения баланса:\n'
+        '• 50 ⭐ → +100 монет\n'
+        '• 100 ⭐ → +250 монет\n'
+        '• 250 ⭐ → +700 монет\n'
+        '• 500 ⭐ → +1500 монет\n'
+        '• 1000 ⭐ → +3500 монет'
+    )
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=donate_kb())
+
+
+@dp.callback_query(F.data.startswith("donate_"))
+async def process_donation(cq: CallbackQuery):
+    """Обработать выбор суммы для доната"""
+    amount_str = cq.data.split("_")[1]
+    amount = int(amount_str)
+    
+    # Соответствие звезд к монетам
+    star_to_coins = {
+        50: 100,
+        100: 250,
+        250: 700,
+        500: 1500,
+        1000: 3500,
+    }
+    
+    coins = star_to_coins.get(amount, 0)
+    
+    if coins == 0:
+        await cq.answer("❌ Некорректная сумма", show_alert=True)
+        return
+    
+    # Отправить инвойс для оплаты звездами
+    await bot.send_invoice(
+        chat_id=cq.from_user.id,
+        title="Пополнение баланса",
+        description=f"Получите {coins} монет за {amount} ⭐",
+        payload=f"donate_{amount}",  # Уникальный payload для отслеживания
+        currency="XTR",  # XTR - Telegram Stars
+        prices=[LabeledPrice(label=f"Звезды ({amount})", amount=amount)],
+        provider_token="",  # Для Telegram Stars provider_token должен быть пустым
+    )
+
+
 @dp.callback_query(F.data == "reset")
 async def reset_handler(cq: CallbackQuery, state: FSMContext):
     reset_balance(cq.from_user.id)   # wins/losses не трогаем
@@ -589,6 +657,54 @@ async def reset_handler(cq: CallbackQuery, state: FSMContext):
         parse_mode="HTML",
         reply_markup=main_menu_kb()
     )
+
+
+# ──────────────────────────────────────────────
+# PAYMENT HANDLERS
+# ──────────────────────────────────────────────
+@dp.pre_checkout_query()
+async def process_pre_checkout_query(pre_checkout_query: PreCheckoutQuery):
+    """Обработать pre-checkout запрос (подтверждение перед платежом)"""
+    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+
+
+@dp.message(lambda msg: msg.successful_payment is not None)
+async def process_successful_payment(msg: Message):
+    """Обработать успешный платеж"""
+    payment = msg.successful_payment
+    
+    # Извлечь сумму звезд из payload
+    payload = payment.invoice_payload
+    if not payload.startswith("donate_"):
+        return
+    
+    amount_str = payload.split("_")[1]
+    amount = int(amount_str)
+    
+    # Соответствие звезд к монетам
+    star_to_coins = {
+        50: 100,
+        100: 250,
+        250: 700,
+        500: 1500,
+        1000: 3500,
+    }
+    
+    coins = star_to_coins.get(amount, 0)
+    
+    if coins > 0:
+        # Добавить монеты пользователю
+        update_balance(msg.from_user.id, coins, win=True, game_type="donation")
+        new_bal = get_balance(msg.from_user.id)
+        
+        text = (
+            f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>Спасибо за поддержку!</b>\n\n'
+            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Вы получили: <b>+{coins} монет</b>\n'
+            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{new_bal} монет</b>'
+        )
+        await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
+    else:
+        await msg.answer("❌ Ошибка при обработке платежа", parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "open_roulette")
