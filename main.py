@@ -694,7 +694,7 @@ async def show_history(cq: CallbackQuery):
             elif entry['game_type'] == "rocket":
                 game_name = "Ракета"
             elif entry['game_type'] == "admin_topup":
-                game_name = "Пополнение от админа"
+                game_name = "Пополнение"
             else:
                 game_name = "Рулетка"
             sign = '+' if entry['is_win'] else '-'
