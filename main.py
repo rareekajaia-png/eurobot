@@ -626,7 +626,7 @@ async def cmd_start(msg: Message, state: FSMContext):
         f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Добро пожаловать в Казино!</b>\n\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ваш баланс: <b>{bal} монет</b>\n\n'
         f'<tg-emoji emoji-id="5778672437122045013">📦</tg-emoji> Доступные игры:\n'
-        f'󠁯•󠁏󠁏Рулетка\n󠁯•󠁏󠁏Орёл или Решка\n󠁯•󠁏󠁏Ракета\n󠁯•󠁏󠁏Сапер'
+        f'󠁯•󠁏󠁏 Рулетка\n󠁯•󠁏󠁏 Орёл или Решка\n󠁯•󠁏󠁏 Ракета\n󠁯•󠁏󠁏 Сапер'
     )
     await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
 
