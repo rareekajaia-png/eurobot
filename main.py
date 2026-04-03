@@ -288,7 +288,7 @@ def main_menu_kb():
             icon_custom_emoji_id="5258882890059091157"   # 🎰
         )],
         [InlineKeyboardButton(
-            text="Орёл и Решка",
+            text="Орёл или Решка",
             callback_data="open_coin",
             icon_custom_emoji_id="5774585885154131652"   # 🪙
         )],
@@ -558,7 +558,7 @@ async def cmd_start(msg: Message, state: FSMContext):
         f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Добро пожаловать в Казино!</b>\n\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ваш баланс: <b>{bal} монет</b>\n\n'
         f'<tg-emoji emoji-id="5778672437122045013">📦</tg-emoji> Нажми на:\n'
-        f'<blockquote>"Рулетка" или "Орёл и Решка" чтобы играть</blockquote>'
+        f'<blockquote>"Рулетка" или "Орёл или Решка" чтобы играть</blockquote>'
     )
     await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
 
@@ -995,7 +995,7 @@ async def open_coin(cq: CallbackQuery, state: FSMContext):
         return
     await state.set_state(CoinState.choosing_side)
     text = (
-        f'<tg-emoji emoji-id="5774585885154131652">🪙</tg-emoji> <b>Орёл и Решка</b>\n'
+        f'<tg-emoji emoji-id="5774585885154131652">🪙</tg-emoji> <b>Орёл или Решка</b>\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>\n\n'
         f'<b>Выберите сторону монеты:</b>'
     )
