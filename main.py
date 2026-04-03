@@ -291,7 +291,7 @@ def main_menu_kb():
             icon_custom_emoji_id="5774585885154131652"
         )],
         [InlineKeyboardButton(
-            text="🚀 Ракета",
+            text="Ракета",
             callback_data="open_rocket",
         )],
         [
