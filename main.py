@@ -98,6 +98,10 @@ class BetState(StatesGroup):
     choosing_bet_type = State()
     choosing_amount   = State()
 
+class CoinState(StatesGroup):
+    choosing_side = State()
+    choosing_amount = State()
+
 # ──────────────────────────────────────────────
 # ROULETTE LOGIC
 # ──────────────────────────────────────────────
