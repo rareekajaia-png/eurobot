@@ -319,8 +319,8 @@ def main_menu_kb():
         ],
         [
             InlineKeyboardButton(
-                text="Статистика",
-                callback_data="stats",
+                text="Профиль",
+                callback_data="profile",
                 icon_custom_emoji_id="5870921681735781843"
             ),
             InlineKeyboardButton(
