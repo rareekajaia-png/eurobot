@@ -329,13 +329,6 @@ def main_menu_kb():
                 icon_custom_emoji_id="5345906554510012647"
             ),
         ],
-        [
-            InlineKeyboardButton(
-                text="Накормить автора",
-                callback_data="donate",
-                icon_custom_emoji_id="5904462880941545555"
-            ),
-        ],
     ])
 
 def rocket_game_kb():
@@ -513,6 +506,11 @@ def stats_menu_kb():
             icon_custom_emoji_id="5870930636742595124"
         )],
         [InlineKeyboardButton(
+            text="Накормить автора",
+            callback_data="donate",
+            icon_custom_emoji_id="5904462880941545555"
+        )],
+        [InlineKeyboardButton(
             text="Назад в меню",
             callback_data="back_main",
             icon_custom_emoji_id="5893057118545646106"
@@ -679,7 +677,7 @@ async def show_stats(cq: CallbackQuery):
     total = wins + losses
     rate = round(wins / total * 100, 1) if total else 0
     text = (
-        f'<tg-emoji emoji-id="5870921681735781843">📊</tg-emoji> <b>Статистика</b>\n\n'
+        f'<tg-emoji emoji-id="5870921681735781843">📊</tg-emoji> <b>Профиль</b>\n\n'
         f'<tg-emoji emoji-id="5870994129244131212">👤</tg-emoji> Игрок: <b>{username or "Неизвестно"}</b>\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{balance}</b> монет\n'
         f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Побед: <b>{wins}</b>\n'
