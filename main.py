@@ -1756,7 +1756,7 @@ async def open_minesweeper(cq: CallbackQuery, state: FSMContext):
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=bet_amount_kb(bal))
 
 
-@dp.callback_query(MinesweeperState.choosing_amount, F.data.startswith("amount_"))
+@dp.callback_query(MinesweeperState.choosing_amount, F.data.startswith("amount_"), F.data != "amount_custom")
 async def minesweeper_set_amount(cq: CallbackQuery, state: FSMContext):
     user_id = cq.from_user.id
     raw = cq.data.replace("amount_", "")
