@@ -295,41 +295,47 @@ def check_coin_bet(choice: str, result: str) -> bool:
 
 def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text="Рулетка",
-            callback_data="open_roulette",
-            icon_custom_emoji_id="5258882890059091157"
-        )],
-        [InlineKeyboardButton(
-            text="Орёл или Решка",
-            callback_data="open_coin",
-            icon_custom_emoji_id="5774585885154131652"
-        )],
-        [InlineKeyboardButton(
-            text="Ракета",
-            callback_data="open_rocket",
-        )],
-        [InlineKeyboardButton(
-            text="Сапер",
-            callback_data="open_minesweeper",
-        )],
+        [
+            InlineKeyboardButton(
+                text="Рулетка",
+                callback_data="open_roulette",
+                icon_custom_emoji_id="5258882890059091157"
+            ),
+            InlineKeyboardButton(
+                text="Орёл или Решка",
+                callback_data="open_coin",
+                icon_custom_emoji_id="5774585885154131652"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="Ракета",
+                callback_data="open_rocket",
+            ),
+            InlineKeyboardButton(
+                text="Сапер",
+                callback_data="open_minesweeper",
+            ),
+        ],
         [
             InlineKeyboardButton(
                 text="Статистика",
                 callback_data="stats",
                 icon_custom_emoji_id="5870921681735781843"
             ),
+            InlineKeyboardButton(
+                text="Сбросить баланс",
+                callback_data="reset",
+                icon_custom_emoji_id="5345906554510012647"
+            ),
         ],
-        [InlineKeyboardButton(
-            text="Накормить автора",
-            callback_data="donate",
-            icon_custom_emoji_id="5904462880941545555"
-        )],
-        [InlineKeyboardButton(
-            text="Сбросить баланс",
-            callback_data="reset",
-            icon_custom_emoji_id="5345906554510012647"
-        )],
+        [
+            InlineKeyboardButton(
+                text="Накормить автора",
+                callback_data="donate",
+                icon_custom_emoji_id="5904462880941545555"
+            ),
+        ],
     ])
 
 def rocket_game_kb():
