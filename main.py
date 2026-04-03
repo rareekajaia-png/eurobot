@@ -1534,7 +1534,7 @@ async def process_broadcast(msg: Message, state: FSMContext):
         try:
             await bot.send_message(
                 user_id,
-                f'<tg-emoji emoji-id="6039422865189638057">📣</tg-emoji> <b>Сообщение от администратора:</b>\n\n{broadcast_text}',
+                f'</b>\n\n{broadcast_text}',
                 parse_mode="HTML"
             )
             success_count += 1
