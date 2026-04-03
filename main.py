@@ -320,7 +320,7 @@ def main_menu_kb():
         [
             InlineKeyboardButton(
                 text="Профиль",
-                callback_data="profile",
+                callback_data="stats",
                 icon_custom_emoji_id="5870921681735781843"
             ),
             InlineKeyboardButton(
