@@ -674,7 +674,12 @@ async def show_history(cq: CallbackQuery):
                 if entry['is_win'] else
                 f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji>'
             )
-            game_name = "Монета" if entry['game_type'] == "coin" else "Рулетка"
+            if entry['game_type'] == "coin":
+                game_name = "Монета"
+            elif entry['game_type'] == "rocket":
+                game_name = "Ракета"
+            else:
+                game_name = "Рулетка"
             sign = '+' if entry['is_win'] else '-'
             text += f'{status_emoji} {sign}{entry["amount"]} - {game_name}\n'
 
@@ -1408,11 +1413,14 @@ async def admin_show_user_history(cq: CallbackQuery):
                 if entry['is_win'] else
                 f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji>'
             )
-            game_name = "Монета" if entry['game_type'] == "coin" else "Рулетка"
+            if entry['game_type'] == "coin":
+                game_name = "Монета"
+            elif entry['game_type'] == "rocket":
+                game_name = "Ракета"
+            else:
+                game_name = "Рулетка"
             sign = '+' if entry['is_win'] else '-'
             text += f'{status_emoji} {sign}{entry["amount"]} - {game_name}\n'
-
-    text += f'\n<tg-emoji emoji-id="5870921681735781843">📊</tg-emoji> <b>Статистика:</b>\n'
     stats = get_user_history_stats(user_id)
     if stats and stats['win_count']:
         total_won = stats['total_won'] or 0
@@ -1791,15 +1799,16 @@ async def rocket_cashout(cq: CallbackQuery, state: FSMContext):
     amount = data.get("rocket_amount", 0)
     multiplier = data.get("rocket_multiplier", 1.0)
 
-    profit = int(amount * multiplier)
-    update_balance(user_id, profit, win=True, game_type="rocket")
+    total_payout = int(amount * multiplier)
+    net_profit = total_payout - amount
+    update_balance(user_id, net_profit, win=True, game_type="rocket")
     await state.clear()
 
     text = (
         f"✅ <b>Вы забрали выигрыш!</b>\n\n"
         f"📈 Множитель: <b>x{multiplier:.2f}</b>\n"
         f"💸 Ставка: <b>{amount} монет</b>\n"
-        f"🎉 Выигрыш: <b>+{profit} монет</b>\n\n"
+        f"🎉 Выигрыш: <b>+{net_profit} монет</b>\n\n"
         f"💰 Новый баланс: <b>{get_balance(user_id)} монет</b>"
     )
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
