@@ -97,21 +97,10 @@ def reset_balance(user_id: int):
 class BetState(StatesGroup):
     choosing_bet_type = State()
     choosing_amount   = State()
-    coin_choice = State()
 
 # ──────────────────────────────────────────────
 # ROULETTE LOGIC
 # ──────────────────────────────────────────────
-
-# ──────────────────────────────────────────────
-# COIN LOGIC (ОРЕЛ / РЕШКА)
-# ──────────────────────────────────────────────
-def flip_coin() -> str:
-    return random.choice(["heads", "tails"])
-
-def coin_label(val: str) -> str:
-    return "🦅 Орёл" if val == "heads" else "🪙 Решка"
-
 RED_NUMBERS   = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
 BLACK_NUMBERS = {2,4,6,8,10,11,13,15,17,20,22,24,26,28,29,31,33,35}
 
@@ -164,40 +153,23 @@ def main_menu_kb():
             callback_data="open_roulette",
             icon_custom_emoji_id="5258882890059091157"   # 🎰
         )],
-        [InlineKeyboardButton(
-            text="Орёл и решка",
-            callback_data="open_coin",
-            icon_custom_emoji_id="5465665476971471368"   # 🪙
-        )],
         [
             InlineKeyboardButton(
                 text="Баланс",
                 callback_data="balance",
-                icon_custom_emoji_id="5904462880941545555"
+                icon_custom_emoji_id="5904462880941545555"   # 🪙
             ),
             InlineKeyboardButton(
                 text="Статистика",
                 callback_data="stats",
-                icon_custom_emoji_id="5870921681735781843"
+                icon_custom_emoji_id="5870921681735781843"   # 📊
             ),
         ],
         [InlineKeyboardButton(
             text="Сбросить баланс",
             callback_data="reset",
-            icon_custom_emoji_id="5345906554510012647"
+            icon_custom_emoji_id="5345906554510012647"   # 🔄
         )],
-    ])
-def coin_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🦅 Орёл", callback_data="coin_heads"),
-            InlineKeyboardButton(text="🪙 Решка", callback_data="coin_tails"),
-        ],
-        [InlineKeyboardButton(
-            text="Назад",
-            callback_data="back_main",
-            icon_custom_emoji_id="5893057118545646106"
-        )]
     ])
 
 def bet_type_kb():
@@ -355,23 +327,6 @@ async def reset_handler(cq: CallbackQuery, state: FSMContext):
         reply_markup=main_menu_kb()
     )
 
-@dp.callback_query(F.data == "open_coin")
-async def open_coin(cq: CallbackQuery, state: FSMContext):
-    bal = get_balance(cq.from_user.id)
-
-    if bal <= 0:
-        await cq.answer("❌ У вас нет монет!", show_alert=True)
-        return
-
-    await state.set_state(BetState.coin_choice)
-
-    await cq.message.edit_text(
-        f'🪙 <b>Орёл и решка</b>\n'
-        f'Баланс: <b>{bal}</b>\n\n'
-        f'<b>Выберите сторону:</b>',
-        parse_mode="HTML",
-        reply_markup=coin_kb()
-    )
 
 @dp.callback_query(F.data == "open_roulette")
 async def open_roulette(cq: CallbackQuery, state: FSMContext):
@@ -386,26 +341,6 @@ async def open_roulette(cq: CallbackQuery, state: FSMContext):
     )
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=bet_type_kb())
 
-@dp.callback_query(BetState.coin_choice, F.data.startswith("coin_"))
-async def coin_pick(cq: CallbackQuery, state: FSMContext):
-    choice = cq.data.split("_")[1]
-
-    await state.update_data(
-        game="coin",
-        coin_choice=choice
-    )
-
-    await state.set_state(BetState.choosing_amount)
-
-    bal = get_balance(cq.from_user.id)
-
-    await cq.message.edit_text(
-        f'🪙 <b>Вы выбрали: {coin_label(choice)}</b>\n\n'
-        f'Баланс: <b>{bal}</b>\n\n'
-        f'<b>Выберите сумму ставки:</b>',
-        parse_mode="HTML",
-        reply_markup=bet_amount_kb(bal)
-    )
 
 @dp.callback_query(BetState.choosing_bet_type, F.data.startswith("bet_"))
 async def choose_bet_type(cq: CallbackQuery, state: FSMContext):
@@ -537,8 +472,6 @@ async def place_bet(cq: CallbackQuery, state: FSMContext):
     amount = int(cq.data.split("_")[1])
     data   = await state.get_data()
     bet_type = data.get("bet_type", "")
-    game = data.get("game")
-    coin_choice_val = data.get("coin_choice")
 
     if not bet_type or bet_type == "pending_number":
         await cq.answer("Сначала выберите тип ставки.", show_alert=True); return
@@ -546,42 +479,6 @@ async def place_bet(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
     if amount > bal:
         await cq.answer("❌ Недостаточно средств!", show_alert=True); return
-
-    # ───── COIN GAME ─────
-if game == "coin":
-    amount = int(cq.data.split("_")[1])
-
-    bal = get_balance(cq.from_user.id)
-    if amount > bal:
-        await cq.answer("❌ Недостаточно средств!", show_alert=True)
-        return
-
-    result = flip_coin()
-    won = result == coin_choice_val
-
-    emoji = "🦅" if result == "heads" else "🪙"
-    result_text = coin_label(result)
-
-    if won:
-        profit = amount
-        update_balance(cq.from_user.id, profit, win=True)
-        outcome_text = f"🎉 <b>ПОБЕДА!</b>\n+{profit} монет"
-    else:
-        update_balance(cq.from_user.id, -amount, win=False)
-        outcome_text = f"❌ <b>Поражение</b>\n-{amount} монет"
-
-    new_bal = get_balance(cq.from_user.id)
-
-    text = (
-        f'🪙 <b>Выпало:</b> {emoji} <b>{result_text}</b>\n\n'
-        f'Ставка: <b>{coin_label(coin_choice_val)}</b> — <b>{amount}</b>\n'
-        f'{outcome_text}\n\n'
-        f'Баланс: <b>{new_bal}</b>'
-    )
-
-    await state.clear()
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=main_menu_kb())
-    return
 
     result = spin_wheel()
     color  = number_color(result)
