@@ -1,6 +1,7 @@
 import asyncio
 import random
 import os
+import time
 from datetime import datetime, timedelta
 import pytz
 from dotenv import load_dotenv
@@ -497,6 +498,21 @@ async def cmd_start(msg: Message, state: FSMContext):
         f'<i>Нажмите «Рулетка» или "Орёл и Решка", чтобы начать игру.</i>'
     )
     await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
+
+
+@dp.message(Command("ping"))
+async def cmd_ping(msg: Message):
+    start_time = time.perf_counter()
+    sent_msg = await msg.answer("📡 ПОНГ...")
+    end_time = time.perf_counter()
+    
+    response_time_ms = round((end_time - start_time) * 1000, 2)
+    
+    await sent_msg.edit_text(
+        f'📡 <b>ПОНГ</b>\n\n'
+        f'⚡ Отклик: <b>{response_time_ms} ms</b>',
+        parse_mode="HTML"
+    )
 
 
 @dp.callback_query(F.data == "back_main")
