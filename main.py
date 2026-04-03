@@ -185,10 +185,10 @@ def bet_amount_kb(balance: int):
     buttons = [
         [
             InlineKeyboardButton(text=f"25%  ({fmt(q1)})", callback_data=f"amount_{q1}"),
-            InlineKeyboardButton(text=f"50%  ({fmt(q2)})", callback_data=f"amount_{q2}"),
+            InlineKeyboardButton(text=f"75%  ({fmt(q3)})", callback_data=f"amount_{q3}"),
         ],
         [
-            InlineKeyboardButton(text=f"75%  ({fmt(q3)})", callback_data=f"amount_{q3}"),
+            InlineKeyboardButton(text=f"50%  ({fmt(q2)})", callback_data=f"amount_{q2}"),
             InlineKeyboardButton(text=f"🔥 Ва-банк ({fmt(q4)})", callback_data=f"amount_{q4}"),
         ],
         [InlineKeyboardButton(text="✏️ Ввести вручную", callback_data="amount_custom")],
