@@ -1464,7 +1464,7 @@ async def ask_new_balance(cq: CallbackQuery, state: FSMContext):
 async def process_new_balance(msg: Message, state: FSMContext):
     if msg.from_user.id != ADMIN_ID:
         return
-
+ 
     try:
         new_balance = int(msg.text.strip())
         assert new_balance >= 0
@@ -1474,17 +1474,17 @@ async def process_new_balance(msg: Message, state: FSMContext):
             parse_mode="HTML"
         )
         return
-
+ 
     data = await state.get_data()
     user_id = data.get("admin_user_id")
-
+ 
     old_balance = get_balance(user_id)
     new_total = old_balance + new_balance
     set_balance(user_id, new_total)
-
+ 
     user = get_user(user_id)
     _, username, _, _, _ = user
-
+ 
     text = (
         f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> <b>Баланс обновлён!</b>\n\n'
         f'<tg-emoji emoji-id="5870994129244131212">👤</tg-emoji> Пользователь: <b>{username or "Неизвестно"}</b> (ID: {user_id})\n'
@@ -1492,9 +1492,21 @@ async def process_new_balance(msg: Message, state: FSMContext):
         f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> Добавлено: <b>+{new_balance}</b> монет\n'
         f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Итого: <b>{new_total}</b> монет'
     )
-
+ 
     await state.clear()
     await msg.answer(text, parse_mode="HTML", reply_markup=admin_menu_kb())
+ 
+    try:
+        await bot.send_message(
+            user_id,
+            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> <b>Баланс пополнен!</b>\n\n'
+            f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> Добавлено: <b>+{new_balance}</b> монет\n'
+            f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Текущий баланс: <b>{new_total}</b> монет',
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
+ 
 
 
 @dp.callback_query(F.data == "admin_broadcast")
