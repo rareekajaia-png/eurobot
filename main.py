@@ -700,7 +700,7 @@ async def show_history(cq: CallbackQuery):
             sign = '+' if entry['is_win'] else '-'
             text += f'{status_emoji} {sign}{entry["amount"]} - {game_name}\n'
     stats = get_user_history_stats(user_id)
-    if stats and stats['win_count']:
+    if stats and (stats['win_count'] or stats['lose_count']):
         total_won = stats['total_won'] or 0
         total_lost = stats['total_lost'] or 0
         text += f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Выигрыши: <b>+{total_won}</b>\n'
@@ -1439,7 +1439,7 @@ async def admin_show_user_history(cq: CallbackQuery):
             sign = '+' if entry['is_win'] else '-'
             text += f'{status_emoji} {sign}{entry["amount"]} - {game_name}\n'
     stats = get_user_history_stats(user_id)
-    if stats and stats['win_count']:
+    if stats and (stats['win_count'] or stats['lose_count']):
         total_won = stats['total_won'] or 0
         total_lost = stats['total_lost'] or 0
         text += f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Выигрыши: <b>+{total_won}</b>\n'
