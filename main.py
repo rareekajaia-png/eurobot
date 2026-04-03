@@ -172,17 +172,22 @@ def bet_type_kb():
     ])
 
 def bet_amount_kb(balance: int):
-    chips = [1, 2, 10, 20, 50, 100]
-    buttons = []
-    row = []
-    for chip in chips:
-        if chip <= balance:
-            row.append(InlineKeyboardButton(text=f"💰 {chip}", callback_data=f"amount_{chip}"))
-        if len(row) == 3:
-            buttons.append(row); row = []
-    if row: buttons.append(row)
-    buttons.append([InlineKeyboardButton(text="✏️ Ввести вручную", callback_data="amount_custom")])
-    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_bet_type")])
+    q1 = max(1, balance // 4)
+    q2 = max(1, balance // 3)
+    q3 = max(1, balance // 2)
+    q4 = balance
+    buttons = [
+        [
+            InlineKeyboardButton(text=f"1/4  ({q1})", callback_data=f"amount_{q1}"),
+            InlineKeyboardButton(text=f"1/3  ({q2})", callback_data=f"amount_{q2}"),
+        ],
+        [
+            InlineKeyboardButton(text=f"1/2  ({q3})", callback_data=f"amount_{q3}"),
+            InlineKeyboardButton(text=f"🔥 Ва-банк ({q4})", callback_data=f"amount_{q4}"),
+        ],
+        [InlineKeyboardButton(text="✏️ Ввести вручную", callback_data="amount_custom")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_bet_type")],
+    ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # ──────────────────────────────────────────────
