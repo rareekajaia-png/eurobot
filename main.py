@@ -294,9 +294,9 @@ async def cmd_start(msg: Message, state: FSMContext):
     bal = get_balance(msg.from_user.id)
     await state.clear()
     text = (
-        f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Добро пожаловать в Европейскую Рулетку!</b>\n\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ваш стартовый баланс: <b>{bal} монет</b>\n\n'
-        f'<i>Нажмите «Рулетка», чтобы начать игру.</i>'
+        f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Добро пожаловать в Казино!</b>\n\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ваш  баланс: <b>{bal} монет</b>\n\n'
+        f'<i>Нажмите «Рулетка» или "Орёл и Решка", чтобы начать игру.</i>'
     )
     await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
 
