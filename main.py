@@ -397,6 +397,26 @@ def stats_menu_kb():
         )],
     ])
 
+def game_result_kb(game_type: str):
+    """Клавиатура результатов игры"""
+    if game_type == "coin":
+        repeat_data = "repeat_coin"
+    else:
+        repeat_data = "repeat_roulette"
+    
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="Повторить",
+            callback_data=repeat_data,
+            icon_custom_emoji_id="5345906554510012647"  # 🔄
+        )],
+        [InlineKeyboardButton(
+            text="В меню",
+            callback_data="back_main",
+            icon_custom_emoji_id="5893057118545646106"  # 📰
+        )],
+    ])
+
 def users_list_kb(users: list, page: int = 0):
     """Создать клавиатуру со списком пользователей (постраничная)"""
     per_page = 5
@@ -557,7 +577,7 @@ async def reset_handler(cq: CallbackQuery, state: FSMContext):
     reset_balance(cq.from_user.id)   # wins/losses не трогаем
     await state.clear()
     await cq.answer(
-        f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Баланс сброшен до 1000 монет!',
+        f'<✅ Баланс сброшен до 1000 монет!',
         show_alert=True
     )
     await cq.message.edit_text(
@@ -766,7 +786,7 @@ async def place_bet(cq: CallbackQuery, state: FSMContext):
     if new_bal <= 0:
         text += f'\n\n<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
 
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=main_menu_kb())
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=game_result_kb("roulette"))
 
 
 # ──────────────────────────────────────────────
@@ -871,7 +891,7 @@ async def handle_coin_amount_input(msg: Message, state: FSMContext):
         if new_bal <= 0:
             text += f'\n\n<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
 
-        await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
+        await msg.answer(text, parse_mode="HTML", reply_markup=game_result_kb("coin"))
         return
 
 
@@ -929,7 +949,50 @@ async def place_coin_bet(cq: CallbackQuery, state: FSMContext):
     if new_bal <= 0:
         text += f'\n\n<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
 
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=main_menu_kb())
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=game_result_kb("coin"))
+
+
+# ──────────────────────────────────────────────
+# REPEAT GAME HANDLERS
+# ──────────────────────────────────────────────
+@dp.callback_query(F.data == "repeat_roulette")
+async def repeat_roulette(cq: CallbackQuery, state: FSMContext):
+    """Повторить игру в рулетку"""
+    bal = get_balance(cq.from_user.id)
+    if bal <= 0:
+        await cq.answer(
+            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> У вас нет монет! Сбросьте баланс.',
+            show_alert=True
+        )
+        return
+    
+    await state.set_state(BetState.choosing_bet_type)
+    text = (
+        f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Европейская Рулетка</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>\n\n'
+        f'<b>Выберите тип ставки:</b>'
+    )
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=bet_type_kb())
+
+
+@dp.callback_query(F.data == "repeat_coin")
+async def repeat_coin(cq: CallbackQuery, state: FSMContext):
+    """Повторить игру в орла и решку"""
+    bal = get_balance(cq.from_user.id)
+    if bal <= 0:
+        await cq.answer(
+            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> У вас нет монет! Сбросьте баланс.',
+            show_alert=True
+        )
+        return
+    
+    await state.set_state(CoinState.choosing_side)
+    text = (
+        f'<tg-emoji emoji-id="5774585885154131652">🪙</tg-emoji> <b>Орёл и Решка</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>\n\n'
+        f'<b>Выберите сторону монеты:</b>'
+    )
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=coin_side_kb())
 
 
 # ──────────────────────────────────────────────
