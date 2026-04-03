@@ -1,1 +1,1 @@
-worker: python pizda.py
+worker: python main.py
