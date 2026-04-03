@@ -510,15 +510,15 @@ def game_result_kb(game_type: str):
 
 def donate_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="50",   callback_data="donate_50",
+        [InlineKeyboardButton(text="⭐️50",   callback_data="donate_50",
                               icon_custom_emoji_id="5870982283724328568")],
-        [InlineKeyboardButton(text="100",  callback_data="donate_100",
+        [InlineKeyboardButton(text="⭐️100",  callback_data="donate_100",
                               icon_custom_emoji_id="5870982283724328568")],
-        [InlineKeyboardButton(text="250",  callback_data="donate_250",
+        [InlineKeyboardButton(text="⭐️250",  callback_data="donate_250",
                               icon_custom_emoji_id="5870982283724328568")],
-        [InlineKeyboardButton(text="500",  callback_data="donate_500",
+        [InlineKeyboardButton(text="⭐️500",  callback_data="donate_500",
                               icon_custom_emoji_id="5870982283724328568")],
-        [InlineKeyboardButton(text="1000", callback_data="donate_1000",
+        [InlineKeyboardButton(text="⭐️1000", callback_data="donate_1000",
                               icon_custom_emoji_id="5870982283724328568")],
         [InlineKeyboardButton(
             text="Своя сумма",
