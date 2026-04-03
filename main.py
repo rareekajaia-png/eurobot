@@ -171,19 +171,25 @@ def bet_type_kb():
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back_main")],
     ])
 
+def fmt(n: int) -> str:
+    if n >= 1000:
+        val = n / 1000
+        return f"{val:.1f}к".replace(".0к", "к")
+    return str(n)
+
 def bet_amount_kb(balance: int):
-    q1 = max(1, balance // 4)
-    q2 = max(1, balance // 3)
-    q3 = max(1, balance // 2)
+    q1 = max(1, round(balance * 0.25))
+    q2 = max(1, round(balance * 0.50))
+    q3 = max(1, round(balance * 0.75))
     q4 = balance
     buttons = [
         [
-            InlineKeyboardButton(text=f"1/4  ({q1})", callback_data=f"amount_{q1}"),
-            InlineKeyboardButton(text=f"1/3  ({q2})", callback_data=f"amount_{q2}"),
+            InlineKeyboardButton(text=f"25%  ({fmt(q1)})", callback_data=f"amount_{q1}"),
+            InlineKeyboardButton(text=f"50%  ({fmt(q2)})", callback_data=f"amount_{q2}"),
         ],
         [
-            InlineKeyboardButton(text=f"1/2  ({q3})", callback_data=f"amount_{q3}"),
-            InlineKeyboardButton(text=f"🔥 Ва-банк ({q4})", callback_data=f"amount_{q4}"),
+            InlineKeyboardButton(text=f"75%  ({fmt(q3)})", callback_data=f"amount_{q3}"),
+            InlineKeyboardButton(text=f"🔥 Ва-банк ({fmt(q4)})", callback_data=f"amount_{q4}"),
         ],
         [InlineKeyboardButton(text="✏️ Ввести вручную", callback_data="amount_custom")],
         [InlineKeyboardButton(text="◀️ Назад", callback_data="back_bet_type")],
