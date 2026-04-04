@@ -341,22 +341,23 @@ def format_chips(amount: int) -> str:
         num = amount / 1000000
         if num == int(num):
             formatted = f"{int(num)}кк"
+            base_num = int(num)
         else:
             formatted = f"{num:.1f}".rstrip('0').rstrip('.') + "кк"
-        base_num = amount
+            base_num = round(num, 1)
     elif amount >= 1000:
         num = amount / 1000
         if num == int(num):
             formatted = f"{int(num)}к"
+            base_num = int(num)
         else:
             formatted = f"{num:.1f}".rstrip('0').rstrip('.') + "к"
-        base_num = amount
+            base_num = round(num, 1)
     else:
         formatted = str(amount)
         base_num = amount
     
     return f"{formatted} {noun_form(base_num, 'фишка', 'фишки', 'фишек')}"
-
 def spin_wheel() -> int:
     return random.randint(0, 36)
 
