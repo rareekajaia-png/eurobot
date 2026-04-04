@@ -77,11 +77,27 @@ def init_db():
                     last_message_id INTEGER
                 )
             """)
-            # Добавляем колонку если её нет (для существующих БД)
-            try:
-                cur.execute("ALTER TABLE users ADD COLUMN last_message_id INTEGER")
-            except:
-                pass
+        conn.commit()
+    except:
+        conn.rollback()
+    finally:
+        db_release(conn)
+    
+    # Добавляем колонку если её нет (для существующих БД)
+    conn = db_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("ALTER TABLE users ADD COLUMN last_message_id INTEGER")
+        conn.commit()
+    except:
+        conn.rollback()
+    finally:
+        db_release(conn)
+    
+    # Создаём таблицу истории
+    conn = db_connect()
+    try:
+        with conn.cursor() as cur:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS history (
                     id         SERIAL PRIMARY KEY,
@@ -97,6 +113,8 @@ def init_db():
                 CREATE INDEX IF NOT EXISTS idx_history_user_id ON history(user_id)
             """)
         conn.commit()
+    except:
+        conn.rollback()
     finally:
         db_release(conn)
 
