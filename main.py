@@ -277,7 +277,7 @@ def format_chips(amount: int) -> str:
             formatted = f"{int(num)}кк"
         else:
             formatted = f"{num:.1f}".rstrip('0').rstrip('.') + "кк"
-        base_num = int(num)
+        base_num = amount  # Склоняем по полному числу
     elif amount >= 1000:
         num = amount / 1000
         # Удаляем нули после точки
@@ -285,7 +285,7 @@ def format_chips(amount: int) -> str:
             formatted = f"{int(num)}к"
         else:
             formatted = f"{num:.1f}".rstrip('0').rstrip('.') + "к"
-        base_num = int(num)
+        base_num = amount  # Склоняем по полному числу
     else:
         formatted = str(amount)
         base_num = amount
