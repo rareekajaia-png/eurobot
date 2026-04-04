@@ -32,20 +32,18 @@ def get_db_pool():
     return db_pool
 
 last_bets = {}  # {user_id: {'game': 'coin'/'roulette', 'choice'/'bet_type': ..., 'amount': ...}}
-last_messages = {}  # {user_id: {'menu': msg_id, 'ping': msg_id, 'admin': msg_id}}
+last_messages = {}  # {user_id: msg_id} - последнее сообщение бота
 
-async def delete_old_message(user_id, msg_type):
-    if user_id in last_messages and msg_type in last_messages[user_id]:
+async def delete_old_message(user_id):
+    if user_id in last_messages:
         try:
-            msg_id = last_messages[user_id][msg_type]
+            msg_id = last_messages[user_id]
             await bot.delete_message(user_id, msg_id)
         except:
             pass
 
-def store_message(user_id, msg_type, msg_id):
-    if user_id not in last_messages:
-        last_messages[user_id] = {}
-    last_messages[user_id][msg_type] = msg_id
+def store_message(user_id, msg_id):
+    last_messages[user_id] = msg_id
 
 def db_connect():
     return get_db_pool().getconn()
@@ -670,7 +668,7 @@ async def cmd_start(msg: Message, state: FSMContext):
     except:
         pass
     
-    await delete_old_message(msg.from_user.id, 'menu')
+    await delete_old_message(msg.from_user.id)
     
     bal = get_or_create_user(msg.from_user.id, msg.from_user.username or "игрок")
     await state.clear()
@@ -680,7 +678,7 @@ async def cmd_start(msg: Message, state: FSMContext):
         f'<tg-emoji emoji-id="5778672437122045013">📦</tg-emoji> Доступные игры:\n'
     )
     response = await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
-    store_message(msg.from_user.id, 'menu', response.message_id)
+    store_message(msg.from_user.id, response.message_id)
 
 
 @dp.message(Command("ping"))
@@ -690,14 +688,14 @@ async def cmd_ping(msg: Message):
     except:
         pass
     
-    await delete_old_message(msg.from_user.id, 'ping')
+    await delete_old_message(msg.from_user.id)
     
     start_time = time.perf_counter()
     sent_msg = await msg.answer(
         '<tg-emoji emoji-id="5983150113483134607">⏰</tg-emoji> ПОНГ...',
         parse_mode="HTML"
     )
-    store_message(msg.from_user.id, 'ping', sent_msg.message_id)
+    store_message(msg.from_user.id, sent_msg.message_id)
     
     end_time = time.perf_counter()
     response_time_ms = round((end_time - start_time) * 1000, 2)
@@ -710,14 +708,15 @@ async def cmd_ping(msg: Message):
 
 @dp.callback_query(F.data == "back_main")
 async def back_main(cq: CallbackQuery, state: FSMContext):
+    await delete_old_message(cq.from_user.id)
     await state.clear()
     bal = get_balance(cq.from_user.id)
     text = (
         f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Казино</b>\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>'
     )
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=main_menu_kb())
-    store_message(cq.from_user.id, 'menu', cq.message.message_id)
+    response = await cq.message.edit_text(text, parse_mode="HTML", reply_markup=main_menu_kb())
+    store_message(cq.from_user.id, cq.message.message_id)
 
 
 @dp.callback_query(F.data == "balance")
@@ -728,6 +727,7 @@ async def show_balance(cq: CallbackQuery):
 
 @dp.callback_query(F.data == "stats")
 async def show_stats(cq: CallbackQuery):
+    await delete_old_message(cq.from_user.id)
     row = get_user(cq.from_user.id)
     if not row:
         await cq.answer("Сначала запустите /start", show_alert=True); return
@@ -747,6 +747,7 @@ async def show_stats(cq: CallbackQuery):
 
 @dp.callback_query(F.data == "stats_history")
 async def show_history(cq: CallbackQuery):
+    await delete_old_message(cq.from_user.id)
     user_id = cq.from_user.id
     history = get_history(user_id, limit=15)
 
@@ -797,6 +798,7 @@ async def show_history(cq: CallbackQuery):
 
 @dp.callback_query(F.data == "donate")
 async def open_donate(cq: CallbackQuery):
+    await delete_old_message(cq.from_user.id)
     text = (
         '<tg-emoji emoji-id="6032644646587338669">🎁</tg-emoji> <b>Накормить автора</b>\n\n'
         'Выберите количество звезд для поддержки разработки\n'
@@ -878,6 +880,7 @@ async def process_custom_donate_amount(msg: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "reset")
 async def reset_handler(cq: CallbackQuery, state: FSMContext):
+    await delete_old_message(cq.from_user.id)
     reset_balance(cq.from_user.id)
     await state.clear()
     await cq.answer('Баланс сброшен до 1000 фишек!', show_alert=True)
@@ -913,6 +916,7 @@ async def process_successful_payment(msg: Message):
 
 @dp.callback_query(F.data == "open_roulette")
 async def open_roulette(cq: CallbackQuery, state: FSMContext):
+    await delete_old_message(cq.from_user.id)
     bal = get_balance(cq.from_user.id)
     if bal <= 0:
         await cq.answer(
@@ -1119,6 +1123,7 @@ async def place_bet(cq: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "open_coin")
 async def open_coin(cq: CallbackQuery, state: FSMContext):
+    await delete_old_message(cq.from_user.id)
     bal = get_balance(cq.from_user.id)
     if bal <= 0:
         await cq.answer('У вас нет фишек! Сбросьте баланс.', show_alert=True)
@@ -1407,7 +1412,7 @@ async def cmd_admin(msg: Message, state: FSMContext):
     except:
         pass
     
-    await delete_old_message(msg.from_user.id, 'admin')
+    await delete_old_message(msg.from_user.id)
 
     await state.set_state(AdminState.choosing_action)
     text = (
@@ -1415,7 +1420,7 @@ async def cmd_admin(msg: Message, state: FSMContext):
         'Выберите действие:'
     )
     response = await msg.answer(text, parse_mode="HTML", reply_markup=admin_menu_kb())
-    store_message(msg.from_user.id, 'admin', response.message_id)
+    store_message(msg.from_user.id, response.message_id)
 
 
 @dp.callback_query(F.data == "admin_users")
@@ -1424,6 +1429,7 @@ async def show_users_list(cq: CallbackQuery, state: FSMContext):
         await cq.answer('Только админ может это делать', show_alert=True)
         return
 
+    await delete_old_message(cq.from_user.id)
     await state.set_state(AdminState.choosing_user)
     users = get_all_users_full()
 
@@ -1714,6 +1720,7 @@ async def admin_back_to_users(cq: CallbackQuery, state: FSMContext):
     if cq.from_user.id != ADMIN_ID:
         return
 
+    await delete_old_message(cq.from_user.id)
     await state.set_state(AdminState.choosing_user)
     users = get_all_users_full()
 
@@ -1800,6 +1807,7 @@ def check_minesweeper_cell(field: list, row: int, col: int) -> tuple:
 
 @dp.callback_query(F.data == "open_minesweeper")
 async def open_minesweeper(cq: CallbackQuery, state: FSMContext):
+    await delete_old_message(cq.from_user.id)
     user_id = cq.from_user.id
     bal = get_balance(user_id)
     if bal <= 0:
@@ -2062,6 +2070,7 @@ async def minesweeper_cashout(cq: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "open_rocket")
 async def open_rocket(cq: CallbackQuery, state: FSMContext):
+    await delete_old_message(cq.from_user.id)
     user_id = cq.from_user.id
     bal = get_balance(user_id)
     if bal <= 0:
