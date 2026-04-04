@@ -218,7 +218,6 @@ def get_user_history_stats(user_id: int):
         db_release(conn)
 
 def clear_all_history():
-    """Удалить всю историю ставок."""
     conn = db_connect()
     try:
         with conn.cursor() as cur:
@@ -258,7 +257,6 @@ RED_NUMBERS   = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
 BLACK_NUMBERS = {2,4,6,8,10,11,13,15,17,20,22,24,26,28,29,31,33,35}
 
 def noun_form(count: int, singular: str, genitive_2_4: str, genitive_5plus: str) -> str:
-    """Возвращает правильную форму существительного в зависимости от числа"""
     count = count % 100
     if count % 10 == 1 and count != 11:
         return singular
@@ -268,24 +266,20 @@ def noun_form(count: int, singular: str, genitive_2_4: str, genitive_5plus: str)
         return genitive_5plus
 
 def format_chips(amount: int) -> str:
-    """Форматирует количество фишек с правильным склонением и сокращением больших чисел"""
-    # Форматируем большие числа
     if amount >= 1000000:
         num = amount / 1000000
-        # Удаляем нули после точки
         if num == int(num):
             formatted = f"{int(num)}кк"
         else:
             formatted = f"{num:.1f}".rstrip('0').rstrip('.') + "кк"
-        base_num = amount  # Склоняем по полному числу
+        base_num = amount
     elif amount >= 1000:
         num = amount / 1000
-        # Удаляем нули после точки
         if num == int(num):
             formatted = f"{int(num)}к"
         else:
             formatted = f"{num:.1f}".rstrip('0').rstrip('.') + "к"
-        base_num = amount  # Склоняем по полному числу
+        base_num = amount
     else:
         formatted = str(amount)
         base_num = amount
@@ -367,7 +361,6 @@ def main_menu_kb():
     ])
 
 def rocket_game_kb():
-    """Кнопки во время игры в ракету"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🚀 Дальше", callback_data="rocket_next"),
@@ -376,7 +369,6 @@ def rocket_game_kb():
     ])
 
 def rocket_amount_kb(balance: int):
-    """Клавиатура выбора ставки для ракеты"""
     q1 = max(1, round(balance * 0.25))
     q2 = max(1, round(balance * 0.50))
     q3 = max(1, round(balance * 0.75))
@@ -1722,7 +1714,6 @@ async def daily_bonus_task():
         await asyncio.sleep(60)
 
 def generate_crash_point() -> float:
-    """Генерирует точку краша. Чем выше множитель — тем реже."""
     r = random.random()
     if r < 0.40:
         return round(random.uniform(1.0, 1.5), 2)   # 40% — краш до 1.5x
@@ -1736,13 +1727,11 @@ def generate_crash_point() -> float:
         return round(random.uniform(8.0, 20.0), 2)  # 8%  — краш 8–20x
 
 def next_multiplier(current: float) -> float:
-    """Следующий шаг множителя — случайный прирост."""
     step = round(random.uniform(0.1, 0.6), 2)
     return round(current + step, 2)
 
 
 def generate_minesweeper_field(size: int = 5, mines: int = 5):
-    """Генерирует поле Сапера. Возвращает поле (True=миния, False=пусто)."""
     field = [[False for _ in range(size)] for _ in range(size)]
     placed = 0
     while placed < mines:
@@ -1754,7 +1743,6 @@ def generate_minesweeper_field(size: int = 5, mines: int = 5):
 
 
 def check_minesweeper_cell(field: list, row: int, col: int) -> tuple:
-    """Проверяет ячейку. Возвращает (is_mine, count_nearby_mines)"""
     size = len(field)
     if field[row][col]:
         return True, 0
@@ -1875,7 +1863,6 @@ async def minesweeper_start_game(cq: CallbackQuery, state: FSMContext):
 
 
 def _minesweeper_text(amount: int, field: list, revealed: list, mines: int = 5) -> str:
-    """Генерирует текст для поля Сапера. mines указывает базовый множитель"""
     base_multipliers = {
         3: 0.8,
         5: 1.2,
@@ -1910,7 +1897,6 @@ def _minesweeper_text(amount: int, field: list, revealed: list, mines: int = 5) 
 
 
 def _minesweeper_mines_kb() -> InlineKeyboardMarkup:
-    """Клавиатура для выбора количества мин"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="3 мины (x0.8)", callback_data="ms_mines_3"),
@@ -2098,7 +2084,6 @@ async def rocket_custom_amount(msg: Message, state: FSMContext):
 
 
 async def _start_rocket_game(message, state: FSMContext, user_id: int, amount: int, is_message: bool = False):
-    """Запустить новую игру в ракету."""
     crash_point = generate_crash_point()
     start_multiplier = 1.0
 
@@ -2133,7 +2118,6 @@ def _rocket_text(amount: int, multiplier: float) -> str:
 
 @dp.callback_query(RocketState.in_game, F.data == "rocket_next")
 async def rocket_next(cq: CallbackQuery, state: FSMContext):
-    """Игрок нажал Дальше — проверяем краш или двигаемся вперёд."""
     user_id = cq.from_user.id
     data = await state.get_data()
 
@@ -2144,7 +2128,7 @@ async def rocket_next(cq: CallbackQuery, state: FSMContext):
     new_multiplier = next_multiplier(multiplier)
 
     if new_multiplier >= crash_point:
-        # 💥 КРАШ
+        # КРАШ
         update_balance(user_id, -amount, win=False, game_type="rocket")
         await state.clear()
         text = (
@@ -2160,7 +2144,7 @@ async def rocket_next(cq: CallbackQuery, state: FSMContext):
                                   icon_custom_emoji_id="5893057118545646106")],
         ]))
     else:
-        # ✅ Продолжаем лететь
+        # Продолжаем
         await state.update_data(rocket_multiplier=new_multiplier)
         text = _rocket_text(amount, new_multiplier)
         try:
@@ -2173,7 +2157,6 @@ async def rocket_next(cq: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(RocketState.in_game, F.data == "rocket_cashout")
 async def rocket_cashout(cq: CallbackQuery, state: FSMContext):
-    """Игрок нажал Забрать — фиксируем выигрыш."""
     user_id = cq.from_user.id
     data = await state.get_data()
 
