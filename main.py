@@ -57,6 +57,19 @@ async def cleanup_old_messages():
         except:
             pass
 
+async def safe_edit_or_send(cq: CallbackQuery, text: str, reply_markup=None):
+    """Пробует edit_text, при ошибке отправляет новое сообщение."""
+    try:
+        await cq.message.edit_text(text, parse_mode="HTML", reply_markup=reply_markup)
+        store_message(cq.from_user.id, cq.message.message_id)
+    except Exception:
+        try:
+            await cq.message.delete()
+        except:
+            pass
+        response = await cq.message.answer(text, parse_mode="HTML", reply_markup=reply_markup)
+        store_message(cq.from_user.id, response.message_id)
+
 def db_connect():
     return get_db_pool().getconn()
 
@@ -358,7 +371,6 @@ def collect_farm(user_id: int):
         db_release(conn)
 
 def get_farm_pending(farm) -> int:
-    """Возвращает накопленные фишки (макс 24 часа)."""
     if not farm:
         return 0
     last = farm['last_collect']
@@ -382,9 +394,9 @@ class CoinState(StatesGroup):
     choosing_amount = State()
 
 class AdminState(StatesGroup):
-    choosing_action  = State()
-    choosing_user    = State()
-    editing_balance  = State()
+    choosing_action   = State()
+    choosing_user     = State()
+    editing_balance   = State()
     sending_broadcast = State()
 
 class DonateState(StatesGroup):
@@ -507,8 +519,10 @@ def main_menu_kb():
                                  icon_custom_emoji_id="5774585885154131652"),
         ],
         [
-            InlineKeyboardButton(text="Ракета", callback_data="open_rocket"),
-            InlineKeyboardButton(text="Сапер",  callback_data="open_minesweeper"),
+            InlineKeyboardButton(text="Ракета", callback_data="open_rocket",
+                                 icon_custom_emoji_id="5373139891223741704"),
+            InlineKeyboardButton(text="Сапер",  callback_data="open_minesweeper",
+                                 icon_custom_emoji_id="5373141891321699086"),
         ],
         [
             InlineKeyboardButton(text="Биткоин-ферма", callback_data="open_farm",
@@ -581,8 +595,10 @@ def farm_kb(user_id: int):
 def rocket_game_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🚀 Дальше",  callback_data="rocket_next"),
-            InlineKeyboardButton(text="💰 Забрать", callback_data="rocket_cashout"),
+            InlineKeyboardButton(text="Дальше",  callback_data="rocket_next",
+                                 icon_custom_emoji_id="5373139891223741704"),
+            InlineKeyboardButton(text="Забрать", callback_data="rocket_cashout",
+                                 icon_custom_emoji_id="5904462880941545555"),
         ],
     ])
 
@@ -598,7 +614,8 @@ def rocket_amount_kb(balance: int):
         ],
         [
             InlineKeyboardButton(text=f"50%  ({fmt(q2)})", callback_data=f"rocket_amount_{q2}"),
-            InlineKeyboardButton(text=f"Ва-банк ({fmt(q4)})", callback_data=f"rocket_amount_{q4}"),
+            InlineKeyboardButton(text=f"Ва-банк ({fmt(q4)})", callback_data=f"rocket_amount_{q4}",
+                                 icon_custom_emoji_id="6041731551845159060"),
         ],
         [InlineKeyboardButton(text="Ввести вручную", callback_data="rocket_amount_custom",
                               icon_custom_emoji_id="5870676941614354370")],
@@ -704,15 +721,15 @@ def game_result_kb(game_type: str):
 
 def donate_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⭐️50",   callback_data="donate_50",
+        [InlineKeyboardButton(text="50 звёзд",   callback_data="donate_50",
                               icon_custom_emoji_id="5870982283724328568")],
-        [InlineKeyboardButton(text="⭐️100",  callback_data="donate_100",
+        [InlineKeyboardButton(text="100 звёзд",  callback_data="donate_100",
                               icon_custom_emoji_id="5870982283724328568")],
-        [InlineKeyboardButton(text="⭐️250",  callback_data="donate_250",
+        [InlineKeyboardButton(text="250 звёзд",  callback_data="donate_250",
                               icon_custom_emoji_id="5870982283724328568")],
-        [InlineKeyboardButton(text="⭐️500",  callback_data="donate_500",
+        [InlineKeyboardButton(text="500 звёзд",  callback_data="donate_500",
                               icon_custom_emoji_id="5870982283724328568")],
-        [InlineKeyboardButton(text="⭐️1000", callback_data="donate_1000",
+        [InlineKeyboardButton(text="1000 звёзд", callback_data="donate_1000",
                               icon_custom_emoji_id="5870982283724328568")],
         [InlineKeyboardButton(text="Своя сумма", callback_data="donate_custom",
                               icon_custom_emoji_id="5870676941614354370")],
@@ -783,7 +800,7 @@ def _minesweeper_kb(revealed: list):
             t = "✅" if revealed[row_idx][col_idx] else "🟫"
             row_buttons.append(InlineKeyboardButton(text=t, callback_data=f"ms_cell_{row_idx}_{col_idx}"))
         buttons.append(row_buttons)
-    buttons.append([InlineKeyboardButton(text="💰 Забрать", callback_data="ms_cashout",
+    buttons.append([InlineKeyboardButton(text="Забрать", callback_data="ms_cashout",
                                          icon_custom_emoji_id="5870633910337015697")])
     buttons.append([InlineKeyboardButton(text="В меню", callback_data="back_main",
                                          icon_custom_emoji_id="5893057118545646106")])
@@ -875,15 +892,13 @@ async def cmd_ping(msg: Message):
 
 @dp.callback_query(F.data == "back_main")
 async def back_main(cq: CallbackQuery, state: FSMContext):
-    await delete_old_message(cq.from_user.id)
     await state.clear()
     bal = get_balance(cq.from_user.id)
     text = (
         f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Казино</b>\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>'
     )
-    response = await cq.message.edit_text(text, parse_mode="HTML", reply_markup=main_menu_kb())
-    store_message(cq.from_user.id, cq.message.message_id)
+    await safe_edit_or_send(cq, text, reply_markup=main_menu_kb())
 
 
 @dp.callback_query(F.data == "balance")
@@ -894,7 +909,6 @@ async def show_balance(cq: CallbackQuery):
 
 @dp.callback_query(F.data == "stats")
 async def show_stats(cq: CallbackQuery):
-    await delete_old_message(cq.from_user.id)
     row = get_user(cq.from_user.id)
     if not row:
         await cq.answer("Сначала запустите /start", show_alert=True)
@@ -910,12 +924,11 @@ async def show_stats(cq: CallbackQuery):
         f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Поражений: <b>{losses}</b>\n'
         f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Процент побед: <b>{rate}%</b>'
     )
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=stats_menu_kb())
+    await safe_edit_or_send(cq, text, reply_markup=stats_menu_kb())
 
 
 @dp.callback_query(F.data == "stats_history")
 async def show_history(cq: CallbackQuery):
-    await delete_old_message(cq.from_user.id)
     user_id = cq.from_user.id
     history = get_history(user_id, limit=15)
 
@@ -939,7 +952,7 @@ async def show_history(cq: CallbackQuery):
     if stats and (stats['win_count'] or stats['lose_count']):
         total_won  = stats['total_won']  or 0
         total_lost = stats['total_lost'] or 0
-        text += f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Выигрыши: <b>+{total_won}</b>\n'
+        text += f'\n<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Выигрыши: <b>+{total_won}</b>\n'
         text += f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Проигрыши: <b>-{total_lost}</b>\n'
         net = total_won - total_lost
         if net > 0:
@@ -949,7 +962,7 @@ async def show_history(cq: CallbackQuery):
         else:
             text += f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Итог: <b>0</b>'
 
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+    await safe_edit_or_send(cq, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Назад в статистику", callback_data="stats",
                               icon_custom_emoji_id="5893057118545646106")],
     ]))
@@ -957,13 +970,12 @@ async def show_history(cq: CallbackQuery):
 
 @dp.callback_query(F.data == "donate")
 async def open_donate(cq: CallbackQuery):
-    await delete_old_message(cq.from_user.id)
     text = (
         '<tg-emoji emoji-id="6032644646587338669">🎁</tg-emoji> <b>Накормить автора</b>\n\n'
         'Выберите количество звезд для поддержки разработки\n'
         '(звезды идут разработчику, спасибо! 💙)'
     )
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=donate_kb())
+    await safe_edit_or_send(cq, text, reply_markup=donate_kb())
 
 
 @dp.callback_query(F.data.startswith("donate_") & (F.data != "donate_custom"))
@@ -988,10 +1000,10 @@ async def process_donation(cq: CallbackQuery):
 @dp.callback_query(F.data == "donate_custom")
 async def ask_custom_donate_amount(cq: CallbackQuery, state: FSMContext):
     await state.set_state(DonateState.entering_custom_amount)
-    await cq.message.edit_text(
+    await safe_edit_or_send(
+        cq,
         '<tg-emoji emoji-id="5870676941614354370">🖋</tg-emoji> <b>Введите сумму в звездах (⭐)</b>\n\n'
         'Минимум: 1 ⭐, максимум: 10000 ⭐',
-        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Назад", callback_data="donate",
                                   icon_custom_emoji_id="5893057118545646106")]
@@ -1025,14 +1037,13 @@ async def process_custom_donate_amount(msg: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "reset")
 async def reset_handler(cq: CallbackQuery, state: FSMContext):
-    await delete_old_message(cq.from_user.id)
     reset_balance(cq.from_user.id)
     await state.clear()
     await cq.answer('Баланс сброшен до 1000 фишек!', show_alert=True)
-    await cq.message.edit_text(
+    await safe_edit_or_send(
+        cq,
         f'<tg-emoji emoji-id="5345906554510012647">🔄</tg-emoji> <b>Баланс сброшен!</b>\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>1000 фишек</b>',
-        parse_mode="HTML",
         reply_markup=main_menu_kb()
     )
 
@@ -1060,11 +1071,10 @@ async def process_successful_payment(msg: Message):
 
 @dp.callback_query(F.data == "open_farm")
 async def open_farm(cq: CallbackQuery):
-    await delete_old_message(cq.from_user.id)
     user_id = cq.from_user.id
     text = farm_text(user_id)
-    response = await cq.message.edit_text(text, parse_mode="HTML", reply_markup=farm_kb(user_id))
-    store_message(user_id, cq.message.message_id)
+    await safe_edit_or_send(cq, text, reply_markup=farm_kb(user_id))
+    await cq.answer()
 
 
 @dp.callback_query(F.data == "farm_noop")
@@ -1095,7 +1105,7 @@ async def farm_buy_handler(cq: CallbackQuery):
 
     await cq.answer("Ферма куплена! ⛏", show_alert=True)
     text = farm_text(user_id)
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=farm_kb(user_id))
+    await safe_edit_or_send(cq, text, reply_markup=farm_kb(user_id))
 
 
 @dp.callback_query(F.data == "farm_collect")
@@ -1124,7 +1134,7 @@ async def farm_collect_handler(cq: CallbackQuery):
 
     await cq.answer(f"Собрано +{fmt(pending)} фишек! ✅", show_alert=True)
     text = farm_text(user_id)
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=farm_kb(user_id))
+    await safe_edit_or_send(cq, text, reply_markup=farm_kb(user_id))
 
 
 @dp.callback_query(F.data == "farm_upgrade")
@@ -1160,14 +1170,13 @@ async def farm_upgrade_handler(cq: CallbackQuery):
     new_name  = FARM_LEVEL_NAMES.get(new_level, f"Уровень {new_level}")
     await cq.answer(f"Ферма улучшена до уровня {new_level} — {new_name}! 🎉", show_alert=True)
     text = farm_text(user_id)
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=farm_kb(user_id))
+    await safe_edit_or_send(cq, text, reply_markup=farm_kb(user_id))
 
 
 # ── Roulette handlers ─────────────────────────────────────────────────────────
 
 @dp.callback_query(F.data == "open_roulette")
 async def open_roulette(cq: CallbackQuery, state: FSMContext):
-    await delete_old_message(cq.from_user.id)
     bal = get_balance(cq.from_user.id)
     if bal <= 0:
         await cq.answer('У вас нет фишек! Сбросьте баланс.', show_alert=True)
@@ -1178,7 +1187,7 @@ async def open_roulette(cq: CallbackQuery, state: FSMContext):
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n'
         f'<b>Выберите тип ставки:</b>'
     )
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=bet_type_kb())
+    await safe_edit_or_send(cq, text, reply_markup=bet_type_kb())
 
 
 @dp.callback_query(BetState.choosing_bet_type, F.data.startswith("bet_"))
@@ -1187,9 +1196,9 @@ async def choose_bet_type(cq: CallbackQuery, state: FSMContext):
     if raw == "number":
         await state.update_data(bet_type="pending_number")
         await state.set_state(BetState.choosing_amount)
-        await cq.message.edit_text(
+        await safe_edit_or_send(
+            cq,
             '<tg-emoji emoji-id="5771851822897566479">🔡</tg-emoji> <b>Введите число от 0 до 36:</b>',
-            parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="Назад", callback_data="back_bet_type",
                                       icon_custom_emoji_id="5893057118545646106")]
@@ -1206,7 +1215,7 @@ async def choose_bet_type(cq: CallbackQuery, state: FSMContext):
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n'
         f'<b>Выберите сумму ставки:</b>'
     )
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=bet_amount_kb(bal))
+    await safe_edit_or_send(cq, text, reply_markup=bet_amount_kb(bal))
 
 
 @dp.callback_query(F.data == "back_bet_type")
@@ -1218,7 +1227,7 @@ async def back_bet_type(cq: CallbackQuery, state: FSMContext):
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n'
         f'<b>Выберите тип ставки:</b>'
     )
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=bet_type_kb())
+    await safe_edit_or_send(cq, text, reply_markup=bet_type_kb())
 
 
 @dp.message(BetState.choosing_amount)
@@ -1291,10 +1300,10 @@ async def handle_number_input(msg: Message, state: FSMContext):
 async def ask_custom_amount(cq: CallbackQuery, state: FSMContext):
     await state.update_data(waiting_custom=True)
     bal = get_balance(cq.from_user.id)
-    await cq.message.edit_text(
+    await safe_edit_or_send(
+        cq,
         f'<tg-emoji emoji-id="5870676941614354370">🖋</tg-emoji> <b>Введите сумму ставки:</b>\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>',
-        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Назад", callback_data="back_bet_type",
                                   icon_custom_emoji_id="5893057118545646106")]
@@ -1348,14 +1357,13 @@ async def place_bet(cq: CallbackQuery, state: FSMContext):
     await state.clear()
     if new_bal <= 0:
         text += f'\n\n<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=game_result_kb("roulette"))
+    await safe_edit_or_send(cq, text, reply_markup=game_result_kb("roulette"))
 
 
 # ── Coin handlers ─────────────────────────────────────────────────────────────
 
 @dp.callback_query(F.data == "open_coin")
 async def open_coin(cq: CallbackQuery, state: FSMContext):
-    await delete_old_message(cq.from_user.id)
     bal = get_balance(cq.from_user.id)
     if bal <= 0:
         await cq.answer('У вас нет фишек! Сбросьте баланс.', show_alert=True)
@@ -1366,7 +1374,7 @@ async def open_coin(cq: CallbackQuery, state: FSMContext):
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n'
         f'<b>Выберите сторону фишки:</b>'
     )
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=coin_side_kb())
+    await safe_edit_or_send(cq, text, reply_markup=coin_side_kb())
 
 
 @dp.callback_query(CoinState.choosing_side, F.data.startswith("coin_"))
@@ -1381,17 +1389,17 @@ async def choose_coin_side(cq: CallbackQuery, state: FSMContext):
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n'
         f'<b>Выберите сумму ставки:</b>'
     )
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=bet_amount_kb(bal))
+    await safe_edit_or_send(cq, text, reply_markup=bet_amount_kb(bal))
 
 
 @dp.callback_query(CoinState.choosing_amount, F.data == "amount_custom")
 async def ask_custom_coin_amount(cq: CallbackQuery, state: FSMContext):
     await state.update_data(waiting_custom=True)
     bal = get_balance(cq.from_user.id)
-    await cq.message.edit_text(
+    await safe_edit_or_send(
+        cq,
         f'<tg-emoji emoji-id="5870676941614354370">🖋</tg-emoji> <b>Введите сумму ставки:</b>\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>',
-        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Назад", callback_data="back_main",
                                   icon_custom_emoji_id="5893057118545646106")]
@@ -1493,7 +1501,7 @@ async def place_coin_bet(cq: CallbackQuery, state: FSMContext):
     await state.clear()
     if new_bal <= 0:
         text += f'\n\n<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=game_result_kb("coin"))
+    await safe_edit_or_send(cq, text, reply_markup=game_result_kb("coin"))
 
 
 @dp.callback_query(F.data == "repeat_roulette")
@@ -1541,7 +1549,7 @@ async def repeat_roulette(cq: CallbackQuery, state: FSMContext):
     )
     if new_bal <= 0:
         text += f'\n\n<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=game_result_kb("roulette"))
+    await safe_edit_or_send(cq, text, reply_markup=game_result_kb("roulette"))
 
 
 @dp.callback_query(F.data == "repeat_coin")
@@ -1589,7 +1597,7 @@ async def repeat_coin(cq: CallbackQuery, state: FSMContext):
     )
     if new_bal <= 0:
         text += f'\n\n<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=game_result_kb("coin"))
+    await safe_edit_or_send(cq, text, reply_markup=game_result_kb("coin"))
 
 
 # ── Admin handlers ────────────────────────────────────────────────────────────
@@ -1621,7 +1629,6 @@ async def show_users_list(cq: CallbackQuery, state: FSMContext):
     if cq.from_user.id != ADMIN_ID:
         await cq.answer('Только админ может это делать', show_alert=True)
         return
-    await delete_old_message(cq.from_user.id)
     await state.set_state(AdminState.choosing_user)
     users = get_all_users_full()
     text = (
@@ -1629,11 +1636,7 @@ async def show_users_list(cq: CallbackQuery, state: FSMContext):
         f'Всего: {len(users)} пользователей\n\n'
         f'Выберите пользователя для редактирования:'
     )
-    try:
-        await cq.message.edit_text(text, parse_mode="HTML", reply_markup=users_list_kb(users, 0))
-    except:
-        response = await cq.message.answer(text, parse_mode="HTML", reply_markup=users_list_kb(users, 0))
-        store_message(cq.from_user.id, response.message_id)
+    await safe_edit_or_send(cq, text, reply_markup=users_list_kb(users, 0))
 
 
 @dp.callback_query(F.data.startswith("admin_users_page_"))
@@ -1647,7 +1650,7 @@ async def paginate_users(cq: CallbackQuery, state: FSMContext):
         f'Всего: {len(users)} пользователей\n\n'
         f'Выберите пользователя для редактирования:'
     )
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=users_list_kb(users, page))
+    await safe_edit_or_send(cq, text, reply_markup=users_list_kb(users, page))
 
 
 @dp.callback_query(F.data.startswith("admin_edit_user_"))
@@ -1670,7 +1673,7 @@ async def edit_user_menu(cq: CallbackQuery, state: FSMContext):
         f'Выберите действие:'
     )
     await state.update_data(admin_user_id=user_id)
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=edit_user_kb(user_id))
+    await safe_edit_or_send(cq, text, reply_markup=edit_user_kb(user_id))
 
 
 @dp.callback_query(F.data.startswith("admin_user_history_"))
@@ -1711,7 +1714,7 @@ async def admin_show_user_history(cq: CallbackQuery):
     if stats and (stats['win_count'] or stats['lose_count']):
         total_won  = stats['total_won']  or 0
         total_lost = stats['total_lost'] or 0
-        text += f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Выигрыши: <b>+{total_won}</b>\n'
+        text += f'\n<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Выигрыши: <b>+{total_won}</b>\n'
         text += f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Проигрыши: <b>-{total_lost}</b>\n'
         net = total_won - total_lost
         if net > 0:
@@ -1721,7 +1724,7 @@ async def admin_show_user_history(cq: CallbackQuery):
         else:
             text += f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Итог: <b>0</b>'
 
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+    await safe_edit_or_send(cq, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Назад к пользователю", callback_data=f"admin_edit_user_{user_id}",
                               icon_custom_emoji_id="5893057118545646106")],
     ]))
@@ -1739,7 +1742,7 @@ async def ask_new_balance(cq: CallbackQuery, state: FSMContext):
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Текущий баланс: <b>{format_chips(current_balance)}</b>\n\n'
         f'Введите сумму которую хотите <b>добавить</b>:\n'
     )
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+    await safe_edit_or_send(cq, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Назад", callback_data="admin_users_back",
                               icon_custom_emoji_id="5893057118545646106")]
     ]))
@@ -1806,16 +1809,10 @@ async def broadcast_menu(cq: CallbackQuery, state: FSMContext):
         f'<i>Поддерживает HTML форматирование</i>'
     )
     await state.set_state(AdminState.sending_broadcast)
-    try:
-        await cq.message.delete()
-    except:
-        pass
-    response = await cq.bot.send_message(cq.from_user.id, text, parse_mode="HTML",
-                                          reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                              [InlineKeyboardButton(text="Отмена", callback_data="admin_back",
-                                                                    icon_custom_emoji_id="5870657884844462243")]
-                                          ]))
-    store_message(cq.from_user.id, response.message_id)
+    await safe_edit_or_send(cq, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Отмена", callback_data="admin_back",
+                              icon_custom_emoji_id="5870657884844462243")]
+    ]))
 
 
 @dp.message(AdminState.sending_broadcast)
@@ -1828,7 +1825,6 @@ async def process_broadcast(msg: Message, state: FSMContext):
         await msg.delete()
     except:
         pass
-    await delete_old_message(msg.from_user.id)
     users = get_all_users_full()
 
     success_count = 0
@@ -1859,7 +1855,7 @@ async def admin_back_to_menu(cq: CallbackQuery, state: FSMContext):
         '<tg-emoji emoji-id="5870982283724328568">⚙️</tg-emoji> <b>Админ-панель</b>\n\n'
         'Выберите действие:'
     )
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=admin_menu_kb())
+    await safe_edit_or_send(cq, text, reply_markup=admin_menu_kb())
 
 
 @dp.callback_query(F.data == "admin_clear_history")
@@ -1868,7 +1864,7 @@ async def admin_clear_history(cq: CallbackQuery):
         return
     clear_all_history()
     text = '<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> <b>История ставок очищена!</b>\n\nВсе записи из таблицы history удалены.'
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+    await safe_edit_or_send(cq, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="Назад в админ-панель", callback_data="admin_back",
                               icon_custom_emoji_id="5893057118545646106")],
     ]))
@@ -1879,7 +1875,6 @@ async def admin_clear_history(cq: CallbackQuery):
 async def admin_back_to_users(cq: CallbackQuery, state: FSMContext):
     if cq.from_user.id != ADMIN_ID:
         return
-    await delete_old_message(cq.from_user.id)
     await state.set_state(AdminState.choosing_user)
     users = get_all_users_full()
     text = (
@@ -1887,7 +1882,7 @@ async def admin_back_to_users(cq: CallbackQuery, state: FSMContext):
         f'Всего: {len(users)} пользователей\n\n'
         f'Выберите пользователя для редактирования:'
     )
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=users_list_kb(users, 0))
+    await safe_edit_or_send(cq, text, reply_markup=users_list_kb(users, 0))
 
 
 # ── Rocket handlers ───────────────────────────────────────────────────────────
@@ -1907,12 +1902,12 @@ def _rocket_text(amount: int, multiplier: float) -> str:
     potential = int(amount * multiplier)
     stars     = "⭐" * min(int(multiplier), 10)
     return (
-        f"🚀 <b>Ракета летит!</b>\n\n"
-        f"💸 Ставка: <b>{format_chips(amount)}</b>\n"
-        f"📈 Множитель: <b>x{multiplier:.2f}</b>  {stars}\n"
-        f"💰 Можно забрать: <b>{format_chips(potential)}</b>\n\n"
-        f"Нажми <b>«Дальше»</b> чтобы лететь выше\n"
-        f"или <b>«Забрать»</b> чтобы зафиксировать!"
+        f'<tg-emoji emoji-id="5373139891223741704">🚀</tg-emoji> <b>Ракета летит!</b>\n\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ставка: <b>{format_chips(amount)}</b>\n'
+        f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Множитель: <b>x{multiplier:.2f}</b>  {stars}\n'
+        f'<tg-emoji emoji-id="5879814368572478751">🏧</tg-emoji> Можно забрать: <b>{format_chips(potential)}</b>\n\n'
+        f'Нажми <b>«Дальше»</b> чтобы лететь выше\n'
+        f'или <b>«Забрать»</b> чтобы зафиксировать!'
     )
 
 async def _start_rocket_game(message, state: FSMContext, user_id: int, amount: int, is_message: bool = False):
@@ -1924,36 +1919,39 @@ async def _start_rocket_game(message, state: FSMContext, user_id: int, amount: i
     if is_message:
         await message.answer(text, parse_mode="HTML", reply_markup=rocket_game_kb())
     else:
-        await message.edit_text(text, parse_mode="HTML", reply_markup=rocket_game_kb())
+        try:
+            await message.edit_text(text, parse_mode="HTML", reply_markup=rocket_game_kb())
+        except Exception:
+            await message.answer(text, parse_mode="HTML", reply_markup=rocket_game_kb())
 
 
 @dp.callback_query(F.data == "open_rocket")
 async def open_rocket(cq: CallbackQuery, state: FSMContext):
-    await delete_old_message(cq.from_user.id)
     bal = get_balance(cq.from_user.id)
     if bal <= 0:
         await cq.answer("У вас нет фишек! Сбросьте баланс.", show_alert=True)
         return
     await state.set_state(RocketState.choosing_amount)
     text = (
-        f"🚀 <b>Ракета</b>\n"
-        f"💰 Баланс: <b>{format_chips(bal)}</b>\n\n"
-        f"Ракета взлетает и множитель растёт.\n"
-        f"Нажми <b>«Дальше»</b> чтобы продолжить лететь,\n"
-        f"или <b>«Забрать»</b> чтобы зафиксировать выигрыш.\n"
-        f"Если ракета взорвётся — ставка сгорает!\n\n"
-        f"<b>Выбери сумму ставки:</b>"
+        f'<tg-emoji emoji-id="5373139891223741704">🚀</tg-emoji> <b>Ракета</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n'
+        f'Ракета взлетает и множитель растёт.\n'
+        f'Нажми <b>«Дальше»</b> чтобы продолжить лететь,\n'
+        f'или <b>«Забрать»</b> чтобы зафиксировать выигрыш.\n'
+        f'Если ракета взорвётся — ставка сгорает!\n\n'
+        f'<b>Выбери сумму ставки:</b>'
     )
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=rocket_amount_kb(bal))
+    await safe_edit_or_send(cq, text, reply_markup=rocket_amount_kb(bal))
 
 
 @dp.callback_query(RocketState.choosing_amount, F.data == "rocket_amount_custom")
 async def rocket_amount_custom_cb(cq: CallbackQuery, state: FSMContext):
     await state.update_data(waiting_custom=True)
     bal = get_balance(cq.from_user.id)
-    await cq.message.edit_text(
-        f"✏️ <b>Введите сумму ставки:</b>\n💰 Баланс: <b>{format_chips(bal)}</b>",
-        parse_mode="HTML",
+    await safe_edit_or_send(
+        cq,
+        f'<tg-emoji emoji-id="5870676941614354370">🖋</tg-emoji> <b>Введите сумму ставки:</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>',
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Назад", callback_data="open_rocket",
                                   icon_custom_emoji_id="5893057118545646106")]
@@ -2002,14 +2000,15 @@ async def rocket_next(cq: CallbackQuery, state: FSMContext):
         update_balance(user_id, -amount, win=False, game_type="rocket")
         await state.clear()
         text = (
-            f"💥 <b>РАКЕТА ВЗОРВАЛАСЬ!</b>\n\n"
-            f"📈 Множитель дошёл до: <b>x{crash_point:.2f}</b>\n"
-            f"💸 Ставка: <b>{format_chips(amount)}</b>\n"
-            f"❌ Вы потеряли: <b>-{format_chips(amount)}</b>\n\n"
-            f"💰 Новый баланс: <b>{format_chips(get_balance(user_id))}</b>"
+            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>РАКЕТА ВЗОРВАЛАСЬ!</b>\n\n'
+            f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Множитель дошёл до: <b>x{crash_point:.2f}</b>\n'
+            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ставка: <b>{format_chips(amount)}</b>\n'
+            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Вы потеряли: <b>-{format_chips(amount)}</b>\n\n'
+            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{format_chips(get_balance(user_id))}</b>'
         )
-        await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🚀 Сыграть снова", callback_data="open_rocket")],
+        await safe_edit_or_send(cq, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Сыграть снова", callback_data="open_rocket",
+                                  icon_custom_emoji_id="5373139891223741704")],
             [InlineKeyboardButton(text="В меню", callback_data="back_main",
                                   icon_custom_emoji_id="5893057118545646106")],
         ]))
@@ -2035,14 +2034,15 @@ async def rocket_cashout(cq: CallbackQuery, state: FSMContext):
     await state.clear()
 
     text = (
-        f"✅ <b>Вы забрали выигрыш!</b>\n\n"
-        f"📈 Множитель: <b>x{multiplier:.2f}</b>\n"
-        f"💸 Ставка: <b>{format_chips(amount)}</b>\n"
-        f"🎉 Выигрыш: <b>+{format_chips(net_profit)}</b>\n\n"
-        f"💰 Новый баланс: <b>{format_chips(get_balance(user_id))}</b>"
+        f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> <b>Вы забрали выигрыш!</b>\n\n'
+        f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Множитель: <b>x{multiplier:.2f}</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ставка: <b>{format_chips(amount)}</b>\n'
+        f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> Выигрыш: <b>+{format_chips(net_profit)}</b>\n\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{format_chips(get_balance(user_id))}</b>'
     )
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚀 Сыграть снова", callback_data="open_rocket")],
+    await safe_edit_or_send(cq, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Сыграть снова", callback_data="open_rocket",
+                              icon_custom_emoji_id="5373139891223741704")],
         [InlineKeyboardButton(text="В меню", callback_data="back_main",
                               icon_custom_emoji_id="5893057118545646106")],
     ]))
@@ -2067,12 +2067,12 @@ def _minesweeper_text(amount: int, field: list, revealed: list, mines: int = 5) 
     multiplier   = base_mult * (1.0 + opened_count * 0.05)
     potential    = int(amount * multiplier)
     text = (
-        f"💣 <b>Сапер</b>\n\n"
-        f"💸 Ставка: <b>{format_chips(amount)}</b>\n"
-        f"💣 Мин: <b>{mines}</b>\n"
-        f"📈 Множитель: <b>x{multiplier:.2f}</b>\n"
-        f"💰 Можно забрать: <b>{format_chips(potential)}</b>\n\n"
-        f"<b>Открывай ячейки:</b>\n"
+        f'<tg-emoji emoji-id="5373141891321699086">💣</tg-emoji> <b>Сапер</b>\n\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ставка: <b>{format_chips(amount)}</b>\n'
+        f'<tg-emoji emoji-id="5373141891321699086">💣</tg-emoji> Мин: <b>{mines}</b>\n'
+        f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Множитель: <b>x{multiplier:.2f}</b>\n'
+        f'<tg-emoji emoji-id="5879814368572478751">🏧</tg-emoji> Можно забрать: <b>{format_chips(potential)}</b>\n\n'
+        f'<b>Открывай ячейки:</b>\n'
     )
     for row_idx, row in enumerate(revealed):
         for col_idx, is_revealed in enumerate(row):
@@ -2086,20 +2086,19 @@ def _minesweeper_text(amount: int, field: list, revealed: list, mines: int = 5) 
 
 @dp.callback_query(F.data == "open_minesweeper")
 async def open_minesweeper(cq: CallbackQuery, state: FSMContext):
-    await delete_old_message(cq.from_user.id)
     bal = get_balance(cq.from_user.id)
     if bal <= 0:
         await cq.answer("У вас нет фишек! Сбросьте баланс.", show_alert=True)
         return
     await state.set_state(MinesweeperState.choosing_amount)
     text = (
-        f"💣 <b>Сапер</b>\n"
-        f"💰 Баланс: <b>{format_chips(bal)}</b>\n\n"
-        f"Открывай ячейки и не попадись на мину!\n"
-        f"Чем больше ячеек откроешь — тем выше множитель.\n\n"
-        f"<b>Выбери сумму ставки:</b>"
+        f'<tg-emoji emoji-id="5373141891321699086">💣</tg-emoji> <b>Сапер</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n'
+        f'Открывай ячейки и не попадись на мину!\n'
+        f'Чем больше ячеек откроешь — тем выше множитель.\n\n'
+        f'<b>Выбери сумму ставки:</b>'
     )
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=bet_amount_kb(bal))
+    await safe_edit_or_send(cq, text, reply_markup=bet_amount_kb(bal))
 
 
 @dp.callback_query(MinesweeperState.choosing_amount, F.data.startswith("amount_"), F.data != "amount_custom")
@@ -2112,11 +2111,11 @@ async def minesweeper_set_amount(cq: CallbackQuery, state: FSMContext):
     await state.set_state(MinesweeperState.choosing_mines)
     await state.update_data(minesweeper_amount=amount)
     text = (
-        f"💣 <b>Выбери количество мин</b>\n\n"
-        f"💰 Ставка: <b>{format_chips(amount)}</b>\n\n"
-        f"Больше мин — выше множитель и больше риск!"
+        f'<tg-emoji emoji-id="5373141891321699086">💣</tg-emoji> <b>Выбери количество мин</b>\n\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ставка: <b>{format_chips(amount)}</b>\n\n'
+        f'Больше мин — выше множитель и больше риск!'
     )
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=_minesweeper_mines_kb())
+    await safe_edit_or_send(cq, text, reply_markup=_minesweeper_mines_kb())
     await cq.answer()
 
 
@@ -2124,12 +2123,12 @@ async def minesweeper_set_amount(cq: CallbackQuery, state: FSMContext):
 async def minesweeper_amount_custom_cb(cq: CallbackQuery, state: FSMContext):
     await state.update_data(waiting_custom=True)
     bal = get_balance(cq.from_user.id)
-    await cq.message.edit_text(
+    await safe_edit_or_send(
+        cq,
         f'<tg-emoji emoji-id="5870676941614354370">🖋</tg-emoji> <b>Введите сумму ставки:</b>\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>',
-        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Назад", callback_data="back_bet_type",
+            [InlineKeyboardButton(text="Назад", callback_data="back_main",
                                   icon_custom_emoji_id="5893057118545646106")]
         ])
     )
@@ -2150,9 +2149,9 @@ async def minesweeper_custom_amount(msg: Message, state: FSMContext):
     await state.set_state(MinesweeperState.choosing_mines)
     await state.update_data(minesweeper_amount=amount, waiting_custom=False)
     text = (
-        f"💣 <b>Выбери количество мин</b>\n\n"
-        f"💰 Ставка: <b>{format_chips(amount)}</b>\n\n"
-        f"Больше мин — выше множитель и больше риск!"
+        f'<tg-emoji emoji-id="5373141891321699086">💣</tg-emoji> <b>Выбери количество мин</b>\n\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ставка: <b>{format_chips(amount)}</b>\n\n'
+        f'Больше мин — выше множитель и больше риск!'
     )
     await msg.answer(text, parse_mode="HTML", reply_markup=_minesweeper_mines_kb())
 
@@ -2168,7 +2167,7 @@ async def minesweeper_start_game(cq: CallbackQuery, state: FSMContext):
     await state.update_data(minesweeper_field=field, minesweeper_revealed=revealed,
                              minesweeper_mines=mines_count)
     text = _minesweeper_text(amount, field, revealed, mines_count)
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=_minesweeper_kb(revealed))
+    await safe_edit_or_send(cq, text, reply_markup=_minesweeper_kb(revealed))
     await cq.answer()
 
 
@@ -2193,20 +2192,24 @@ async def minesweeper_open_cell(cq: CallbackQuery, state: FSMContext):
         update_balance(user_id, -amount, win=False, game_type="minesweeper")
         await state.clear()
         text = (
-            f"💥 <b>МИНА!</b>\n\n"
-            f"💸 Ставка: <b>{format_chips(amount)}</b>\n"
-            f"❌ Вы потеряли: <b>-{format_chips(amount)}</b>\n\n"
-            f"💰 Новый баланс: <b>{format_chips(get_balance(user_id))}</b>"
+            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>МИНА!</b>\n\n'
+            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ставка: <b>{format_chips(amount)}</b>\n'
+            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Вы потеряли: <b>-{format_chips(amount)}</b>\n\n'
+            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{format_chips(get_balance(user_id))}</b>'
         )
-        await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💣 Сыграть снова", callback_data="open_minesweeper")],
+        await safe_edit_or_send(cq, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Сыграть снова", callback_data="open_minesweeper",
+                                  icon_custom_emoji_id="5373141891321699086")],
             [InlineKeyboardButton(text="В меню", callback_data="back_main",
                                   icon_custom_emoji_id="5893057118545646106")],
         ]))
     else:
         await state.update_data(minesweeper_revealed=revealed)
         text = _minesweeper_text(amount, field, revealed, mines_count)
-        await cq.message.edit_text(text, parse_mode="HTML", reply_markup=_minesweeper_kb(revealed))
+        try:
+            await cq.message.edit_text(text, parse_mode="HTML", reply_markup=_minesweeper_kb(revealed))
+        except Exception:
+            pass
     await cq.answer()
 
 
@@ -2225,15 +2228,16 @@ async def minesweeper_cashout(cq: CallbackQuery, state: FSMContext):
     update_balance(user_id, net_profit, win=True, game_type="minesweeper")
     await state.clear()
     text = (
-        f"✅ <b>Вы забрали выигрыш!</b>\n\n"
-        f"📈 Открыто ячеек: <b>{opened_count}</b>\n"
-        f"📈 Множитель: <b>x{multiplier:.2f}</b>\n"
-        f"💸 Ставка: <b>{format_chips(amount)}</b>\n"
-        f"🎉 Выигрыш: <b>+{format_chips(net_profit)}</b>\n\n"
-        f"💰 Новый баланс: <b>{format_chips(get_balance(user_id))}</b>"
+        f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> <b>Вы забрали выигрыш!</b>\n\n'
+        f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Открыто ячеек: <b>{opened_count}</b>\n'
+        f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Множитель: <b>x{multiplier:.2f}</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ставка: <b>{format_chips(amount)}</b>\n'
+        f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> Выигрыш: <b>+{format_chips(net_profit)}</b>\n\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{format_chips(get_balance(user_id))}</b>'
     )
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💣 Сыграть снова", callback_data="open_minesweeper")],
+    await safe_edit_or_send(cq, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Сыграть снова", callback_data="open_minesweeper",
+                              icon_custom_emoji_id="5373141891321699086")],
         [InlineKeyboardButton(text="В меню", callback_data="back_main",
                               icon_custom_emoji_id="5893057118545646106")],
     ]))
@@ -2269,7 +2273,6 @@ async def daily_bonus_task():
 
 
 async def farm_notify_task():
-    """Раз в час уведомляет владельцев ферм о накопленных фишках."""
     while True:
         await asyncio.sleep(3600)
         conn = db_connect()
