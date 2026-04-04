@@ -1713,6 +1713,10 @@ async def process_broadcast(msg: Message, state: FSMContext):
         return
 
     broadcast_text = msg.text
+    try:
+        await msg.delete()
+    except:
+        pass
     users = get_all_users_full()
 
     success_count = 0
@@ -1737,7 +1741,8 @@ async def process_broadcast(msg: Message, state: FSMContext):
     )
 
     await state.clear()
-    await msg.answer(text, parse_mode="HTML", reply_markup=admin_menu_kb())
+    response = await msg.answer(text, parse_mode="HTML", reply_markup=admin_menu_kb())
+    store_message(msg.from_user.id, response.message_id)
 
 
 @dp.callback_query(F.data == "admin_back")
