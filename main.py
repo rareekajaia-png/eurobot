@@ -1689,7 +1689,6 @@ async def broadcast_menu(cq: CallbackQuery, state: FSMContext):
         await cq.answer('Только админ может это делать', show_alert=True)
         return
 
-    await delete_old_message(cq.from_user.id)
     users = get_all_users_full()
     text = (
         f'<tg-emoji emoji-id="6039422865189638057">📣</tg-emoji> <b>Рассылка сообщений</b>\n\n'
@@ -1699,7 +1698,11 @@ async def broadcast_menu(cq: CallbackQuery, state: FSMContext):
     )
 
     await state.set_state(AdminState.sending_broadcast)
-    response = await cq.message.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+    try:
+        await cq.message.delete()
+    except:
+        pass
+    response = await cq.bot.send_message(cq.from_user.id, text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(
             text="Отмена",
             callback_data="admin_back",
@@ -1707,10 +1710,6 @@ async def broadcast_menu(cq: CallbackQuery, state: FSMContext):
         )]
     ]))
     store_message(cq.from_user.id, response.message_id)
-    try:
-        await cq.message.delete()
-    except:
-        pass
 
 
 @dp.message(AdminState.sending_broadcast)
