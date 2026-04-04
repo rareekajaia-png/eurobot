@@ -257,6 +257,20 @@ class MinesweeperState(StatesGroup):
 RED_NUMBERS   = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
 BLACK_NUMBERS = {2,4,6,8,10,11,13,15,17,20,22,24,26,28,29,31,33,35}
 
+def noun_form(count: int, singular: str, genitive_2_4: str, genitive_5plus: str) -> str:
+    """Возвращает правильную форму существительного в зависимости от числа"""
+    count = count % 100
+    if count % 10 == 1 and count != 11:
+        return singular
+    elif count % 10 in (2, 3, 4) and count not in (12, 13, 14):
+        return genitive_2_4
+    else:
+        return genitive_5plus
+
+def format_chips(amount: int) -> str:
+    """Форматирует количество фишек с правильным склонением"""
+    return f"{amount} {noun_form(amount, 'фишка', 'фишки', 'фишек')}"
+
 def spin_wheel() -> int:
     return random.randint(0, 36)
 
@@ -572,7 +586,7 @@ def users_list_kb(users: list, page: int = 0):
         username = user['username'] or f"ID {user_id}"
         balance = user['balance']
         buttons.append([InlineKeyboardButton(
-            text=f"{username} ({balance} монет)",
+            text=f"{username} ({format_chips(balance)})",
             callback_data=f"admin_edit_user_{user_id}",
             icon_custom_emoji_id="5870994129244131212"
         )])
@@ -628,7 +642,7 @@ async def cmd_start(msg: Message, state: FSMContext):
     await state.clear()
     text = (
         f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Добро пожаловать в Казино!</b>\n\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ваш баланс: <b>{bal} монет</b>\n\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ваш баланс: <b>{format_chips(bal)}</b>\n\n'
         f'<tg-emoji emoji-id="5778672437122045013">📦</tg-emoji> Доступные игры:\n'
     )
     await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
@@ -656,7 +670,7 @@ async def back_main(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
     text = (
         f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Казино</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>'
     )
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=main_menu_kb())
 
@@ -664,7 +678,7 @@ async def back_main(cq: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "balance")
 async def show_balance(cq: CallbackQuery):
     bal = get_balance(cq.from_user.id)
-    await cq.answer(f'Ваш баланс: {bal} монет', show_alert=True)
+    await cq.answer(f'Ваш баланс: {format_chips(bal)}', show_alert=True)
 
 
 @dp.callback_query(F.data == "stats")
@@ -678,7 +692,7 @@ async def show_stats(cq: CallbackQuery):
     text = (
         f'<tg-emoji emoji-id="5870921681735781843">📊</tg-emoji> <b>Профиль</b>\n\n'
         f'<tg-emoji emoji-id="5870994129244131212">👤</tg-emoji> Игрок: <b>{username or "Неизвестно"}</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{balance}</b> монет\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(balance)}</b>\n'
         f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Побед: <b>{wins}</b>\n'
         f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Поражений: <b>{losses}</b>\n'
         f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Процент побед: <b>{rate}%</b>'
@@ -821,10 +835,10 @@ async def process_custom_donate_amount(msg: Message, state: FSMContext):
 async def reset_handler(cq: CallbackQuery, state: FSMContext):
     reset_balance(cq.from_user.id)
     await state.clear()
-    await cq.answer('Баланс сброшен до 1000 монет!', show_alert=True)
+    await cq.answer('Баланс сброшен до 1000 фишек!', show_alert=True)
     await cq.message.edit_text(
         f'<tg-emoji emoji-id="5345906554510012647">🔄</tg-emoji> <b>Баланс сброшен!</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>1000 монет</b>',
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>1000 фишек</b>',
         parse_mode="HTML",
         reply_markup=main_menu_kb()
     )
@@ -857,14 +871,14 @@ async def open_roulette(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
     if bal <= 0:
         await cq.answer(
-            'У вас нет монет! Сбросьте баланс.',
+            'У вас нет фишек! Сбросьте баланс.',
             show_alert=True
         )
         return
     await state.set_state(BetState.choosing_bet_type)
     text = (
         f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Европейская Рулетка</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>\n\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n'
         f'<b>Выберите тип ставки:</b>'
     )
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=bet_type_kb())
@@ -896,7 +910,7 @@ async def choose_bet_type(cq: CallbackQuery, state: FSMContext):
     label = BET_LABELS.get(raw, raw)
     text = (
         f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Ставка: {label}</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>\n\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n'
         f'<b>Выберите сумму ставки:</b>'
     )
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=bet_amount_kb(bal))
@@ -908,7 +922,7 @@ async def back_bet_type(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
     text = (
         f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Европейская Рулетка</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>\n\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n'
         f'<b>Выберите тип ставки:</b>'
     )
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=bet_type_kb())
@@ -940,21 +954,21 @@ async def handle_number_input(msg: Message, state: FSMContext):
             update_balance(msg.from_user.id, profit, win=True, game_type="roulette")
             outcome_text = (
                 f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>ПОБЕДА!</b>\n'
-                f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{profit} монет (x{mult})'
+                f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{format_chips(profit)} (x{mult})'
             )
         else:
             update_balance(msg.from_user.id, -amount, win=False, game_type="roulette")
             outcome_text = (
                 f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Поражение.</b>\n'
-                f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{amount} монет'
+                f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{format_chips(amount)}'
             )
         new_bal = get_balance(msg.from_user.id)
         label = BET_LABELS.get(bet_type, bet_type.replace("num_", "число "))
         text = (
             f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Шарик остановился на:</b> {color} <b>{result}</b>\n\n'
-            f'🎲 Ваша ставка: <b>{label}</b> — <b>{amount}</b> монет\n'
+            f'🎲 Ваша ставка: <b>{label}</b> — <b>{format_chips(amount)}</b>\n'
             f'{outcome_text}\n\n'
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{new_bal} монет</b>'
+            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{format_chips(new_bal)}</b>'
         )
         await state.clear()
         if new_bal <= 0:
@@ -978,7 +992,7 @@ async def handle_number_input(msg: Message, state: FSMContext):
     bal = get_balance(msg.from_user.id)
     await msg.answer(
         f'<tg-emoji emoji-id="5771851822897566479">🔡</tg-emoji> <b>Ставка на число {n}</b> (выплата x35)\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>\n\n<b>Выберите сумму ставки:</b>',
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n<b>Выберите сумму ставки:</b>',
         parse_mode="HTML",
         reply_markup=bet_amount_kb(bal)
     )
@@ -990,7 +1004,7 @@ async def ask_custom_amount(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
     await cq.message.edit_text(
         f'<tg-emoji emoji-id="5870676941614354370">🖋</tg-emoji> <b>Введите сумму ставки:</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>',
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>',
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
@@ -1028,13 +1042,13 @@ async def place_bet(cq: CallbackQuery, state: FSMContext):
         update_balance(cq.from_user.id, profit, win=True, game_type="roulette")
         outcome_text = (
             f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>ПОБЕДА!</b>\n'
-            f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{profit} монет (x{mult})'
+            f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{format_chips(profit)} (x{mult})'
         )
     else:
         update_balance(cq.from_user.id, -amount, win=False, game_type="roulette")
         outcome_text = (
             f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Поражение.</b>\n'
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{amount} монет'
+            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{format_chips(amount)}'
         )
 
     new_bal = get_balance(cq.from_user.id)
@@ -1042,9 +1056,9 @@ async def place_bet(cq: CallbackQuery, state: FSMContext):
 
     text = (
         f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Шарик остановился на:</b> {color} <b>{result}</b>\n\n'
-        f'🎲 Ваша ставка: <b>{label}</b> — <b>{amount}</b> монет\n'
+        f'🎲 Ваша ставка: <b>{label}</b> — <b>{format_chips(amount)}</b>\n'
         f'{outcome_text}\n\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{new_bal} монет</b>'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{format_chips(new_bal)}</b>'
     )
 
     await state.clear()
@@ -1062,13 +1076,13 @@ async def place_bet(cq: CallbackQuery, state: FSMContext):
 async def open_coin(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
     if bal <= 0:
-        await cq.answer('У вас нет монет! Сбросьте баланс.', show_alert=True)
+        await cq.answer('У вас нет фишек! Сбросьте баланс.', show_alert=True)
         return
     await state.set_state(CoinState.choosing_side)
     text = (
         f'<tg-emoji emoji-id="5774585885154131652">🪙</tg-emoji> <b>Орёл или Решка</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>\n\n'
-        f'<b>Выберите сторону монеты:</b>'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n'
+        f'<b>Выберите сторону фишки:</b>'
     )
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=coin_side_kb())
 
@@ -1083,7 +1097,7 @@ async def choose_coin_side(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
     text = (
         f'<tg-emoji emoji-id="5774585885154131652">🪙</tg-emoji> <b>Ставка: {side_label}</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>\n\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n'
         f'<b>Выберите сумму ставки:</b>'
     )
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=bet_amount_kb(bal))
@@ -1095,7 +1109,7 @@ async def ask_custom_coin_amount(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
     await cq.message.edit_text(
         f'<tg-emoji emoji-id="5870676941614354370">🖋</tg-emoji> <b>Введите сумму ставки:</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>',
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>',
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
@@ -1134,21 +1148,21 @@ async def handle_coin_amount_input(msg: Message, state: FSMContext):
             update_balance(msg.from_user.id, profit, win=True, game_type="coin")
             outcome_text = (
                 f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>ПОБЕДА!</b>\n'
-                f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{profit} монет (x2)'
+                f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{format_chips(profit)} (x2)'
             )
         else:
             update_balance(msg.from_user.id, -amount, win=False, game_type="coin")
             outcome_text = (
                 f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Поражение.</b>\n'
-                f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{amount} монет'
+                f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{format_chips(amount)}'
             )
 
         new_bal = get_balance(msg.from_user.id)
         text = (
             f'<tg-emoji emoji-id="5774585885154131652">🪙</tg-emoji> <b>Результат:</b> {result_label}\n\n'
-            f'🎲 Ваша ставка: <b>{side_label}</b> — <b>{amount}</b> монет\n'
+            f'🎲 Ваша ставка: <b>{side_label}</b> — <b>{format_chips(amount)}</b>\n'
             f'{outcome_text}\n\n'
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{new_bal} монет</b>'
+            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{format_chips(new_bal)}</b>'
         )
 
         await state.clear()
@@ -1170,7 +1184,7 @@ async def place_coin_bet(cq: CallbackQuery, state: FSMContext):
     coin_choice = data.get("coin_choice", "")
 
     if not coin_choice:
-        await cq.answer('Сначала выберите сторону монеты.', show_alert=True)
+        await cq.answer('Сначала выберите сторону фишки.', show_alert=True)
         return
 
     bal = get_balance(cq.from_user.id)
@@ -1191,21 +1205,21 @@ async def place_coin_bet(cq: CallbackQuery, state: FSMContext):
         update_balance(cq.from_user.id, profit, win=True, game_type="coin")
         outcome_text = (
             f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>ПОБЕДА!</b>\n'
-            f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{profit} монет (x2)'
+            f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{format_chips(profit)} (x2)'
         )
     else:
         update_balance(cq.from_user.id, -amount, win=False, game_type="coin")
         outcome_text = (
             f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Поражение.</b>\n'
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{amount} монет'
+            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{format_chips(amount)}'
         )
 
     new_bal = get_balance(cq.from_user.id)
     text = (
         f'<tg-emoji emoji-id="5774585885154131652">🪙</tg-emoji> <b>Результат:</b> {result_label}\n\n'
-        f'🎲 Ваша ставка: <b>{side_label}</b> — <b>{amount}</b> монет\n'
+        f'🎲 Ваша ставка: <b>{side_label}</b> — <b>{format_chips(amount)}</b>\n'
         f'{outcome_text}\n\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{new_bal} монет</b>'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{format_chips(new_bal)}</b>'
     )
 
     await state.clear()
@@ -1234,7 +1248,7 @@ async def repeat_roulette(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(user_id)
     if amount > bal:
         await cq.answer(
-            f'Недостаточно монет! Нужно {amount}, а у вас {bal}.',
+            f'Недостаточно фишек! Нужно {amount}, а у вас {bal}.',
             show_alert=True
         )
         return
@@ -1249,13 +1263,13 @@ async def repeat_roulette(cq: CallbackQuery, state: FSMContext):
         update_balance(user_id, profit, win=True, game_type="roulette")
         outcome_text = (
             f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>ПОБЕДА!</b>\n'
-            f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{profit} монет (x{mult})'
+            f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{format_chips(profit)} (x{mult})'
         )
     else:
         update_balance(user_id, -amount, win=False, game_type="roulette")
         outcome_text = (
             f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Поражение.</b>\n'
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{amount} монет'
+            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{format_chips(amount)}'
         )
 
     new_bal = get_balance(user_id)
@@ -1263,9 +1277,9 @@ async def repeat_roulette(cq: CallbackQuery, state: FSMContext):
 
     text = (
         f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Шарик остановился на:</b> {color} <b>{result}</b>\n\n'
-        f'🎲 Ваша ставка: <b>{label}</b> — <b>{amount}</b> монет\n'
+        f'🎲 Ваша ставка: <b>{label}</b> — <b>{format_chips(amount)}</b>\n'
         f'{outcome_text}\n\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{new_bal} монет</b>'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{format_chips(new_bal)}</b>'
     )
 
     if new_bal <= 0:
@@ -1292,7 +1306,7 @@ async def repeat_coin(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(user_id)
     if amount > bal:
         await cq.answer(
-            f'Недостаточно монет! Нужно {amount}, а у вас {bal}.',
+            f'Недостаточно фишек! Нужно {amount}, а у вас {bal}.',
             show_alert=True
         )
         return
@@ -1308,21 +1322,21 @@ async def repeat_coin(cq: CallbackQuery, state: FSMContext):
         update_balance(user_id, profit, win=True, game_type="coin")
         outcome_text = (
             f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>ПОБЕДА!</b>\n'
-            f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{profit} монет (x2)'
+            f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{format_chips(profit)} (x2)'
         )
     else:
         update_balance(user_id, -amount, win=False, game_type="coin")
         outcome_text = (
             f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Поражение.</b>\n'
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{amount} монет'
+            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{format_chips(amount)}'
         )
 
     new_bal = get_balance(user_id)
     text = (
         f'<tg-emoji emoji-id="5774585885154131652">🪙</tg-emoji> <b>Результат:</b> {result_label}\n\n'
-        f'🎲 Ваша ставка: <b>{side_label}</b> — <b>{amount}</b> монет\n'
+        f'🎲 Ваша ставка: <b>{side_label}</b> — <b>{format_chips(amount)}</b>\n'
         f'{outcome_text}\n\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{new_bal} монет</b>'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{format_chips(new_bal)}</b>'
     )
 
     if new_bal <= 0:
@@ -1401,7 +1415,7 @@ async def edit_user_menu(cq: CallbackQuery, state: FSMContext):
         f'<tg-emoji emoji-id="5870994129244131212">👤</tg-emoji> <b>Профиль пользователя:</b>\n\n'
         f'ID: <code>{user_id}</code>\n'
         f'Имя: <b>{username or "Неизвестно"}</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{balance}</b> монет\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(balance)}</b>\n'
         f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Побед: <b>{wins}</b>\n'
         f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Поражений: <b>{losses}</b>\n\n'
         f'Выберите действие:'
@@ -1488,7 +1502,7 @@ async def ask_new_balance(cq: CallbackQuery, state: FSMContext):
 
     current_balance = get_balance(user_id)
     text = (
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Текущий баланс: <b>{current_balance}</b> монет\n\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Текущий баланс: <b>{format_chips(current_balance)}</b>\n\n'
         f'Введите сумму которую хотите <b>добавить</b>:\n'
     )
 
@@ -1530,9 +1544,9 @@ async def process_new_balance(msg: Message, state: FSMContext):
     text = (
         f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> <b>Баланс обновлён!</b>\n\n'
         f'<tg-emoji emoji-id="5870994129244131212">👤</tg-emoji> Пользователь: <b>{username or "Неизвестно"}</b> (ID: {user_id})\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Было: <b>{old_balance}</b> монет\n'
-        f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> Добавлено: <b>+{new_balance}</b> монет\n'
-        f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Итого: <b>{new_total}</b> монет'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Было: <b>{format_chips(old_balance)}</b>\n'
+        f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> Добавлено: <b>+{format_chips(new_balance)}</b>\n'
+        f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Итого: <b>{format_chips(new_total)}</b>'
     )
  
     await state.clear()
@@ -1542,8 +1556,8 @@ async def process_new_balance(msg: Message, state: FSMContext):
         await bot.send_message(
             user_id,
             f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> <b>Баланс пополнен!</b>\n\n'
-            f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> Добавлено: <b>+{new_balance}</b> монет\n'
-            f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Текущий баланс: <b>{new_total}</b> монет',
+            f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> Добавлено: <b>+{format_chips(new_balance)}</b>\n'
+            f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Текущий баланс: <b>{format_chips(new_total)}</b>',
             parse_mode="HTML"
         )
     except Exception:
@@ -1676,8 +1690,8 @@ async def daily_bonus_task():
                 await bot.send_message(
                     user_id,
                     f'<tg-emoji emoji-id="6032644646587338669">🎁</tg-emoji> <b>Ежедневный бонус!</b>\n\n'
-                    f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> Вам начислено <b>+500 монет</b>\n'
-                    f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Текущий баланс: <b>{new_bal} монет</b>\n\n'
+                    f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> Вам начислено <b>+500 фишек</b>\n'
+                    f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Текущий баланс: <b>{format_chips(new_bal)}</b>\n\n'
                     f'<i>Удачной игры!</i>',
                     parse_mode="HTML"
                 )
@@ -1740,12 +1754,12 @@ async def open_minesweeper(cq: CallbackQuery, state: FSMContext):
     user_id = cq.from_user.id
     bal = get_balance(user_id)
     if bal <= 0:
-        await cq.answer("У вас нет монет! Сбросьте баланс.", show_alert=True)
+        await cq.answer("У вас нет фишек! Сбросьте баланс.", show_alert=True)
         return
     await state.set_state(MinesweeperState.choosing_amount)
     text = (
         f"💣 <b>Сапер</b>\n"
-        f"💰 Баланс: <b>{bal} монет</b>\n\n"
+        f"💰 Баланс: <b>{format_chips(bal)}</b>\n\n"
         f"Открывай ячейки и не попадись на мину!\n"
         f"Чем больше ячеек откроешь — тем выше множитель.\n\n"
         f"<b>Выбери сумму ставки:</b>"
@@ -1768,7 +1782,7 @@ async def minesweeper_set_amount(cq: CallbackQuery, state: FSMContext):
     
     text = (
         f"💣 <b>Выбери количество мин</b>\n\n"
-        f"💰 Ставка: <b>{amount} монет</b>\n\n"
+        f"💰 Ставка: <b>{format_chips(amount)}</b>\n\n"
         f"Больше мин — выше множитель и больше риск!"
     )
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=_minesweeper_mines_kb())
@@ -1781,7 +1795,7 @@ async def minesweeper_amount_custom_cb(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
     await cq.message.edit_text(
         f'<tg-emoji emoji-id="5870676941614354370">🖋</tg-emoji> <b>Введите сумму ставки:</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{bal} монет</b>',
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>',
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
@@ -1811,7 +1825,7 @@ async def minesweeper_custom_amount(msg: Message, state: FSMContext):
     
     text = (
         f"💣 <b>Выбери количество мин</b>\n\n"
-        f"💰 Ставка: <b>{amount} монет</b>\n\n"
+        f"💰 Ставка: <b>{format_chips(amount)}</b>\n\n"
         f"Больше мин — выше множитель и больше риск!"
     )
     await msg.answer(text, parse_mode="HTML", reply_markup=_minesweeper_mines_kb())
@@ -1842,21 +1856,21 @@ async def minesweeper_start_game(cq: CallbackQuery, state: FSMContext):
 def _minesweeper_text(amount: int, field: list, revealed: list, mines: int = 5) -> str:
     """Генерирует текст для поля Сапера. mines указывает базовый множитель"""
     base_multipliers = {
-        3: 1.5,
-        5: 2.0,
-        7: 3.0,
-        10: 5.0
+        3: 0.8,
+        5: 1.2,
+        7: 1.8,
+        10: 2.5
     }
     base_mult = base_multipliers.get(mines, 2.0)
     opened_count = sum(sum(row) for row in revealed)
-    multiplier = base_mult * (1.0 + (opened_count * 0.1))
+    multiplier = base_mult * (1.0 + (opened_count * 0.05))
     potential = int(amount * multiplier)
     text = (
         f"💣 <b>Сапер</b>\n\n"
-        f"💸 Ставка: <b>{amount} монет</b>\n"
+        f"💸 Ставка: <b>{format_chips(amount)}</b>\n"
         f"💣 Мин: <b>{mines}</b>\n"
         f"📈 Множитель: <b>x{multiplier:.2f}</b>\n"
-        f"💰 Можно забрать: <b>{potential} монет</b>\n\n"
+        f"💰 Можно забрать: <b>{format_chips(potential)}</b>\n\n"
         f"<b>Откроется ячейки:</b>\n"
     )
     
@@ -1878,12 +1892,12 @@ def _minesweeper_mines_kb() -> InlineKeyboardMarkup:
     """Клавиатура для выбора количества мин"""
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="3 мины (x1.5)", callback_data="ms_mines_3"),
-            InlineKeyboardButton(text="5 мин (x2.0)", callback_data="ms_mines_5"),
+            InlineKeyboardButton(text="3 мины (x0.8)", callback_data="ms_mines_3"),
+            InlineKeyboardButton(text="5 мин (x1.2)", callback_data="ms_mines_5"),
         ],
         [
-            InlineKeyboardButton(text="7 мин (x3.0)", callback_data="ms_mines_7"),
-            InlineKeyboardButton(text="10 мин (x5.0)", callback_data="ms_mines_10"),
+            InlineKeyboardButton(text="7 мин (x1.8)", callback_data="ms_mines_7"),
+            InlineKeyboardButton(text="10 мин (x2.5)", callback_data="ms_mines_10"),
         ],
         [InlineKeyboardButton(
             text="Назад",
@@ -1941,9 +1955,9 @@ async def minesweeper_open_cell(cq: CallbackQuery, state: FSMContext):
         await state.clear()
         text = (
             f"💥 <b>МИНА!</b>\n\n"
-            f"💸 Ставка: <b>{amount} монет</b>\n"
-            f"❌ Вы потеряли: <b>-{amount} монет</b>\n\n"
-            f"💰 Новый баланс: <b>{get_balance(user_id)} монет</b>"
+            f"💸 Ставка: <b>{format_chips(amount)}</b>\n"
+            f"❌ Вы потеряли: <b>-{format_chips(amount)}</b>\n\n"
+            f"💰 Новый баланс: <b>{format_chips(get_balance(user_id))}</b>"
         )
         await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="💣 Сыграть снова", callback_data="open_minesweeper")],
@@ -1969,13 +1983,13 @@ async def minesweeper_cashout(cq: CallbackQuery, state: FSMContext):
     opened_count = sum(sum(row) for row in revealed)
     
     base_multipliers = {
-        3: 1.5,
-        5: 2.0,
-        7: 3.0,
-        10: 5.0
+        3: 0.8,
+        5: 1.2,
+        7: 1.8,
+        10: 2.5
     }
     base_mult = base_multipliers.get(mines_count, 2.0)
-    multiplier = base_mult * (1.0 + (opened_count * 0.1))
+    multiplier = base_mult * (1.0 + (opened_count * 0.05))
     
     total_payout = int(amount * multiplier)
     net_profit = total_payout - amount
@@ -1987,9 +2001,9 @@ async def minesweeper_cashout(cq: CallbackQuery, state: FSMContext):
         f"✅ <b>Вы забрали выигрыш!</b>\n\n"
         f"📈 Открыто ячеек: <b>{opened_count}</b>\n"
         f"📈 Множитель: <b>x{multiplier:.2f}</b>\n"
-        f"💸 Ставка: <b>{amount} монет</b>\n"
-        f"🎉 Выигрыш: <b>+{net_profit} монет</b>\n\n"
-        f"💰 Новый баланс: <b>{get_balance(user_id)} монет</b>"
+        f"💸 Ставка: <b>{format_chips(amount)}</b>\n"
+        f"🎉 Выигрыш: <b>+{format_chips(net_profit)}</b>\n\n"
+        f"💰 Новый баланс: <b>{format_chips(get_balance(user_id))}</b>"
     )
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💣 Сыграть снова", callback_data="open_minesweeper")],
@@ -2004,12 +2018,12 @@ async def open_rocket(cq: CallbackQuery, state: FSMContext):
     user_id = cq.from_user.id
     bal = get_balance(user_id)
     if bal <= 0:
-        await cq.answer("У вас нет монет! Сбросьте баланс.", show_alert=True)
+        await cq.answer("У вас нет фишек! Сбросьте баланс.", show_alert=True)
         return
     await state.set_state(RocketState.choosing_amount)
     text = (
         f"🚀 <b>Ракета</b>\n"
-        f"💰 Баланс: <b>{bal} монет</b>\n\n"
+        f"💰 Баланс: <b>{format_chips(bal)}</b>\n\n"
         f"Ракета взлетает и множитель растёт.\n"
         f"Нажми <b>«Дальше»</b> чтобы продолжить лететь,\n"
         f"или <b>«Забрать»</b> чтобы зафиксировать выигрыш.\n"
@@ -2024,7 +2038,7 @@ async def rocket_amount_custom_cb(cq: CallbackQuery, state: FSMContext):
     await state.update_data(waiting_custom=True)
     bal = get_balance(cq.from_user.id)
     await cq.message.edit_text(
-        f"✏️ <b>Введите сумму ставки:</b>\n💰 Баланс: <b>{bal} монет</b>",
+        f"✏️ <b>Введите сумму ставки:</b>\n💰 Баланс: <b>{format_chips(bal)}</b>",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Назад", callback_data="open_rocket",
@@ -2088,9 +2102,9 @@ def _rocket_text(amount: int, multiplier: float) -> str:
     stars = "⭐" * min(int(multiplier), 10)
     return (
         f"🚀 <b>Ракета летит!</b>\n\n"
-        f"💸 Ставка: <b>{amount} монет</b>\n"
+        f"💸 Ставка: <b>{format_chips(amount)}</b>\n"
         f"📈 Множитель: <b>x{multiplier:.2f}</b>  {stars}\n"
-        f"💰 Можно забрать: <b>{potential} монет</b>\n\n"
+        f"💰 Можно забрать: <b>{format_chips(potential)}</b>\n\n"
         f"Нажми <b>«Дальше»</b> чтобы лететь выше\n"
         f"или <b>«Забрать»</b> чтобы зафиксировать!"
     )
@@ -2115,9 +2129,9 @@ async def rocket_next(cq: CallbackQuery, state: FSMContext):
         text = (
             f"💥 <b>РАКЕТА ВЗОРВАЛАСЬ!</b>\n\n"
             f"📈 Множитель дошёл до: <b>x{crash_point:.2f}</b>\n"
-            f"💸 Ставка: <b>{amount} монет</b>\n"
-            f"❌ Вы потеряли: <b>-{amount} монет</b>\n\n"
-            f"💰 Новый баланс: <b>{get_balance(user_id)} монет</b>"
+            f"💸 Ставка: <b>{format_chips(amount)}</b>\n"
+            f"❌ Вы потеряли: <b>-{format_chips(amount)}</b>\n\n"
+            f"💰 Новый баланс: <b>{format_chips(get_balance(user_id))}</b>"
         )
         await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🚀 Сыграть снова", callback_data="open_rocket")],
@@ -2153,9 +2167,9 @@ async def rocket_cashout(cq: CallbackQuery, state: FSMContext):
     text = (
         f"✅ <b>Вы забрали выигрыш!</b>\n\n"
         f"📈 Множитель: <b>x{multiplier:.2f}</b>\n"
-        f"💸 Ставка: <b>{amount} монет</b>\n"
-        f"🎉 Выигрыш: <b>+{net_profit} монет</b>\n\n"
-        f"💰 Новый баланс: <b>{get_balance(user_id)} монет</b>"
+        f"💸 Ставка: <b>{format_chips(amount)}</b>\n"
+        f"🎉 Выигрыш: <b>+{format_chips(net_profit)}</b>\n\n"
+        f"💰 Новый баланс: <b>{format_chips(get_balance(user_id))}</b>"
     )
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🚀 Сыграть снова", callback_data="open_rocket")],
