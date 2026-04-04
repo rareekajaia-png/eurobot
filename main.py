@@ -427,16 +427,16 @@ def noun_form(count, singular, genitive_2_4, genitive_5plus):
         return genitive_5plus
 
 def format_chips(amount: int) -> str:
-    if amount >= 1000000:
-        num = amount / 1000000
-        if num == int(num):
-            formatted = f"{int(num)}кк"
-            base_num = int(num)
+    if amount >= 1_000_000:
+        millions = amount / 1_000_000
+        if millions == int(millions):
+            formatted = f"{int(millions)}кк"
         else:
-            formatted = f"{num:.1f}".rstrip('0').rstrip('.') + "кк"
-            base_num = round(num, 1)
-    elif amount >= 1000:
-        num = amount / 1000
+            formatted = f"{millions:.1f}".rstrip('0').rstrip('.') + "кк"
+        return f"{formatted} фишек"  # всегда "фишек" для миллионов
+        return f"{formatted} {noun_form(base_num, 'фишка', 'фишки', 'фишек')}"
+    elif amount >= 1_000:
+        num = amount / 1_000
         if num == int(num):
             formatted = f"{int(num)}к"
             base_num = int(num)
@@ -446,12 +446,20 @@ def format_chips(amount: int) -> str:
     else:
         formatted = str(amount)
         base_num = amount
+    
     return f"{formatted} {noun_form(base_num, 'фишка', 'фишки', 'фишек')}"
 
 def fmt(n: int) -> str:
-    if n >= 1000:
-        val = n / 1000
-        return f"{val:.1f}к".replace(".0к", "к")
+    if n >= 1_000_000:
+        val = n / 1_000_000
+        if val == int(val):
+            return f"{int(val)}кк"
+        return f"{val:.1f}".rstrip('0').rstrip('.') + "кк"
+    elif n >= 1_000:
+        val = n / 1_000
+        if val == int(val):
+            return f"{int(val)}к"
+        return f"{val:.1f}".rstrip('0').rstrip('.') + "к"
     return str(n)
 
 def spin_wheel() -> int:
