@@ -268,8 +268,21 @@ def noun_form(count: int, singular: str, genitive_2_4: str, genitive_5plus: str)
         return genitive_5plus
 
 def format_chips(amount: int) -> str:
-    """Форматирует количество фишек с правильным склонением"""
-    return f"{amount} {noun_form(amount, 'фишка', 'фишки', 'фишек')}"
+    """Форматирует количество фишек с правильным склонением и сокращением больших чисел"""
+    # Форматируем большие числа
+    if amount >= 1000000:
+        formatted = f"{amount / 1000000:.1f}кк".rstrip('0').rstrip('.')
+        # Получаем число без буквы для склонения
+        base_num = int(float(formatted.replace('кк', '')))
+    elif amount >= 1000:
+        formatted = f"{amount / 1000:.1f}к".rstrip('0').rstrip('.')
+        # Получаем число без буквы для склонения
+        base_num = int(float(formatted.replace('к', '')))
+    else:
+        formatted = str(amount)
+        base_num = amount
+    
+    return f"{formatted} {noun_form(base_num, 'фишка', 'фишки', 'фишек')}"
 
 def spin_wheel() -> int:
     return random.randint(0, 36)
