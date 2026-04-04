@@ -271,13 +271,21 @@ def format_chips(amount: int) -> str:
     """Форматирует количество фишек с правильным склонением и сокращением больших чисел"""
     # Форматируем большие числа
     if amount >= 1000000:
-        formatted = f"{amount / 1000000:.1f}кк".rstrip('0').rstrip('.')
-        # Получаем число без буквы для склонения
-        base_num = int(float(formatted.replace('кк', '')))
+        num = amount / 1000000
+        # Удаляем нули после точки
+        if num == int(num):
+            formatted = f"{int(num)}кк"
+        else:
+            formatted = f"{num:.1f}".rstrip('0').rstrip('.') + "кк"
+        base_num = int(num)
     elif amount >= 1000:
-        formatted = f"{amount / 1000:.1f}к".rstrip('0').rstrip('.')
-        # Получаем число без буквы для склонения
-        base_num = int(float(formatted.replace('к', '')))
+        num = amount / 1000
+        # Удаляем нули после точки
+        if num == int(num):
+            formatted = f"{int(num)}к"
+        else:
+            formatted = f"{num:.1f}".rstrip('0').rstrip('.') + "к"
+        base_num = int(num)
     else:
         formatted = str(amount)
         base_num = amount
