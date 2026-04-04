@@ -44,6 +44,18 @@ async def delete_old_message(user_id):
 
 def store_message(user_id, msg_id):
     last_messages[user_id] = msg_id
+    save_message_id(user_id, msg_id)
+
+async def cleanup_old_messages():
+    rows = load_all_message_ids()
+    if not rows:
+        return
+    for user_id, msg_id in rows:
+        try:
+            await bot.delete_message(user_id, msg_id)
+            last_messages[user_id] = None
+        except:
+            pass
 
 def db_connect():
     return get_db_pool().getconn()
@@ -61,9 +73,15 @@ def init_db():
                     username   TEXT,
                     balance    INTEGER DEFAULT 1000,
                     wins       INTEGER DEFAULT 0,
-                    losses     INTEGER DEFAULT 0
+                    losses     INTEGER DEFAULT 0,
+                    last_message_id INTEGER
                 )
             """)
+            # Добавляем колонку если её нет (для существующих БД)
+            try:
+                cur.execute("ALTER TABLE users ADD COLUMN last_message_id INTEGER")
+            except:
+                pass
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS history (
                     id         SERIAL PRIMARY KEY,
@@ -179,6 +197,29 @@ def set_balance(user_id: int, amount: int):
                 (amount, user_id)
             )
         conn.commit()
+    finally:
+        db_release(conn)
+
+def save_message_id(user_id: int, msg_id: int):
+    conn = db_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET last_message_id = %s WHERE user_id = %s",
+                (msg_id, user_id)
+            )
+        conn.commit()
+    finally:
+        db_release(conn)
+
+def load_all_message_ids():
+    conn = db_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT user_id, last_message_id FROM users WHERE last_message_id IS NOT NULL"
+            )
+            return cur.fetchall()
     finally:
         db_release(conn)
 
@@ -2235,6 +2276,7 @@ async def rocket_cashout(cq: CallbackQuery, state: FSMContext):
 async def main():
     init_db()
     print("🎰 Roulette bot started!")
+    await cleanup_old_messages()
     asyncio.create_task(daily_bonus_task())
     try:
         await dp.start_polling(bot)
