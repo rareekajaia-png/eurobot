@@ -32,6 +32,20 @@ def get_db_pool():
     return db_pool
 
 last_bets = {}  # {user_id: {'game': 'coin'/'roulette', 'choice'/'bet_type': ..., 'amount': ...}}
+last_messages = {}  # {user_id: {'menu': msg_id, 'ping': msg_id, 'admin': msg_id}}
+
+async def delete_old_message(user_id, msg_type):
+    if user_id in last_messages and msg_type in last_messages[user_id]:
+        try:
+            msg_id = last_messages[user_id][msg_type]
+            await bot.delete_message(user_id, msg_id)
+        except:
+            pass
+
+def store_message(user_id, msg_type, msg_id):
+    if user_id not in last_messages:
+        last_messages[user_id] = {}
+    last_messages[user_id][msg_type] = msg_id
 
 def db_connect():
     return get_db_pool().getconn()
@@ -656,6 +670,8 @@ async def cmd_start(msg: Message, state: FSMContext):
     except:
         pass
     
+    await delete_old_message(msg.from_user.id, 'menu')
+    
     bal = get_or_create_user(msg.from_user.id, msg.from_user.username or "игрок")
     await state.clear()
     text = (
@@ -663,7 +679,8 @@ async def cmd_start(msg: Message, state: FSMContext):
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ваш баланс: <b>{format_chips(bal)}</b>\n\n'
         f'<tg-emoji emoji-id="5778672437122045013">📦</tg-emoji> Доступные игры:\n'
     )
-    await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
+    response = await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
+    store_message(msg.from_user.id, 'menu', response.message_id)
 
 
 @dp.message(Command("ping"))
@@ -673,11 +690,15 @@ async def cmd_ping(msg: Message):
     except:
         pass
     
+    await delete_old_message(msg.from_user.id, 'ping')
+    
     start_time = time.perf_counter()
     sent_msg = await msg.answer(
         '<tg-emoji emoji-id="5983150113483134607">⏰</tg-emoji> ПОНГ...',
         parse_mode="HTML"
     )
+    store_message(msg.from_user.id, 'ping', sent_msg.message_id)
+    
     end_time = time.perf_counter()
     response_time_ms = round((end_time - start_time) * 1000, 2)
     await sent_msg.edit_text(
@@ -696,6 +717,7 @@ async def back_main(cq: CallbackQuery, state: FSMContext):
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>'
     )
     await cq.message.edit_text(text, parse_mode="HTML", reply_markup=main_menu_kb())
+    store_message(cq.from_user.id, 'menu', cq.message.message_id)
 
 
 @dp.callback_query(F.data == "balance")
@@ -1380,12 +1402,20 @@ async def cmd_admin(msg: Message, state: FSMContext):
         )
         return
 
+    try:
+        await msg.delete()
+    except:
+        pass
+    
+    await delete_old_message(msg.from_user.id, 'admin')
+
     await state.set_state(AdminState.choosing_action)
     text = (
         '<tg-emoji emoji-id="5870982283724328568">⚙️</tg-emoji> <b>Админ-панель</b>\n\n'
         'Выберите действие:'
     )
-    await msg.answer(text, parse_mode="HTML", reply_markup=admin_menu_kb())
+    response = await msg.answer(text, parse_mode="HTML", reply_markup=admin_menu_kb())
+    store_message(msg.from_user.id, 'admin', response.message_id)
 
 
 @dp.callback_query(F.data == "admin_users")
