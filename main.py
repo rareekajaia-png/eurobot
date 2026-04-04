@@ -651,6 +651,11 @@ def edit_user_kb(user_id: int):
 
 @dp.message(CommandStart())
 async def cmd_start(msg: Message, state: FSMContext):
+    try:
+        await msg.delete()
+    except:
+        pass
+    
     bal = get_or_create_user(msg.from_user.id, msg.from_user.username or "игрок")
     await state.clear()
     text = (
@@ -663,6 +668,11 @@ async def cmd_start(msg: Message, state: FSMContext):
 
 @dp.message(Command("ping"))
 async def cmd_ping(msg: Message):
+    try:
+        await msg.delete()
+    except:
+        pass
+    
     start_time = time.perf_counter()
     sent_msg = await msg.answer(
         '<tg-emoji emoji-id="5983150113483134607">⏰</tg-emoji> ПОНГ...',
