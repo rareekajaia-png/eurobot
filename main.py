@@ -1753,6 +1753,10 @@ async def process_new_balance(msg: Message, state: FSMContext):
     if msg.from_user.id != ADMIN_ID:
         return
     try:
+        await msg.delete()
+    except:
+        pass
+    try:
         new_balance = int(msg.text.strip())
         assert new_balance >= 0
     except:
