@@ -1661,7 +1661,7 @@ async def process_new_balance(msg: Message, state: FSMContext):
     add_history(user_id, new_balance, True, game_type="admin_topup")
  
     user = get_user(user_id)
-    _, username, _, _, _ = user
+    _, username, *_ = user
  
     text = (
         f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> <b>Баланс обновлён!</b>\n\n'
