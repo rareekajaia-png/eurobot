@@ -1532,7 +1532,7 @@ async def edit_user_menu(cq: CallbackQuery, state: FSMContext):
         await cq.answer('Пользователь не найден', show_alert=True)
         return
 
-    _, username, balance, wins, losses = row
+    _, username, balance, wins, losses, *_ = row
     text = (
         f'<tg-emoji emoji-id="5870994129244131212">👤</tg-emoji> <b>Профиль пользователя:</b>\n\n'
         f'ID: <code>{user_id}</code>\n'
