@@ -1698,14 +1698,14 @@ async def broadcast_menu(cq: CallbackQuery, state: FSMContext):
     )
 
     await state.set_state(AdminState.sending_broadcast)
-await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(
-        text="Отмена",
-        callback_data="admin_back",
-        icon_custom_emoji_id="5870657884844462243"
-    )]
-]))
-store_message(cq.from_user.id, cq.message.message_id)
+    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="Отмена",
+            callback_data="admin_back",
+            icon_custom_emoji_id="5870657884844462243"
+        )]
+    ]))
+    store_message(cq.from_user.id, cq.message.message_id)
 
 
 @dp.message(AdminState.sending_broadcast)
