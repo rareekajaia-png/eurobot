@@ -1497,7 +1497,11 @@ async def show_users_list(cq: CallbackQuery, state: FSMContext):
         f'Всего: {len(users)} пользователей\n\n'
         f'Выберите пользователя для редактирования:'
     )
-    await cq.message.edit_text(text, parse_mode="HTML", reply_markup=users_list_kb(users, 0))
+    try:
+        await cq.message.edit_text(text, parse_mode="HTML", reply_markup=users_list_kb(users, 0))
+    except:
+        response = await cq.message.answer(text, parse_mode="HTML", reply_markup=users_list_kb(users, 0))
+        store_message(cq.from_user.id, response.message_id)
 
 
 @dp.callback_query(F.data.startswith("admin_users_page_"))
