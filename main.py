@@ -2294,7 +2294,6 @@ async def main():
     print("🎰 Casino bot started!")
     await cleanup_old_messages()
     asyncio.create_task(daily_bonus_task())
-    asyncio.create_task(farm_notify_task())
     try:
         await dp.start_polling(bot)
     finally:
