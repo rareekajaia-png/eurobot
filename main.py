@@ -2284,31 +2284,7 @@ async def daily_bonus_task():
         await asyncio.sleep(60)
 
 
-async def farm_notify_task():
-    while True:
-        await asyncio.sleep(3600)
-        conn = db_connect()
-        try:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("SELECT * FROM farms")
-                farms = cur.fetchall()
-        finally:
-            db_release(conn)
 
-        for farm in farms:
-            pending = get_farm_pending(farm)
-            if pending > 0:
-                try:
-                    await bot.send_message(
-                        farm['user_id'],
-                        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> <b>Ферма накопила фишки!</b>\n\n'
-                        f'⛏ Уровень: <b>{farm["level"]}</b>\n'
-                        f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Доступно: <b>{format_chips(pending)}</b>\n\n'
-                        f'Зайди и собери!',
-                        parse_mode="HTML"
-                    )
-                except Exception:
-                    pass
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
