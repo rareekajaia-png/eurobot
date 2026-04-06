@@ -789,12 +789,12 @@ def edit_user_kb(user_id: int):
 def _minesweeper_mines_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="3 мины (x0.8)",  callback_data="ms_mines_3"),
-            InlineKeyboardButton(text="5 мин (x1.2)",   callback_data="ms_mines_5"),
+            InlineKeyboardButton(text="3 мины (x1.1)",  callback_data="ms_mines_3"),
+            InlineKeyboardButton(text="5 мин (x1.3)",   callback_data="ms_mines_5"),
         ],
         [
-            InlineKeyboardButton(text="7 мин (x1.8)",   callback_data="ms_mines_7"),
-            InlineKeyboardButton(text="10 мин (x2.5)",  callback_data="ms_mines_10"),
+            InlineKeyboardButton(text="7 мин (x2.0)",   callback_data="ms_mines_7"),
+            InlineKeyboardButton(text="10 мин (x2.8)",  callback_data="ms_mines_10"),
         ],
         [InlineKeyboardButton(text="Назад", callback_data="back_main",
                               icon_custom_emoji_id="5893057118545646106")],
@@ -2074,7 +2074,7 @@ def generate_minesweeper_field(size: int = 5, mines: int = 5):
     return field
 
 def _minesweeper_text(amount: int, field: list, revealed: list, mines: int = 5) -> str:
-    base_mult    = {3: 0.8, 5: 1.2, 7: 1.8, 10: 2.5}.get(mines, 2.0)
+    base_mult    = {3: 1.1, 5: 1.3, 7: 2.0, 10: 2.8}.get(mines, 2.0)
     opened_count = sum(sum(row) for row in revealed)
     multiplier   = base_mult * (1.0 + opened_count * 0.05)
     potential    = int(amount * multiplier)
@@ -2233,7 +2233,7 @@ async def minesweeper_cashout(cq: CallbackQuery, state: FSMContext):
     revealed    = data.get("minesweeper_revealed", [])
     mines_count = data.get("minesweeper_mines", 5)
     opened_count = sum(sum(row) for row in revealed)
-    base_mult    = {3: 0.8, 5: 1.2, 7: 1.8, 10: 2.5}.get(mines_count, 2.0)
+    base_mult    = {3: 1.1, 5: 1.3, 7: 2.0, 10: 2.8}.get(mines_count, 2.0)
     multiplier   = base_mult * (1.0 + opened_count * 0.05)
     net_profit   = int(amount * multiplier) - amount
 
