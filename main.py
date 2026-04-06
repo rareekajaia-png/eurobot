@@ -58,7 +58,10 @@ async def cleanup_old_messages():
             pass
 
 async def safe_edit_or_send(cq: CallbackQuery, text: str, reply_markup=None):
+<<<<<<< HEAD:main.py
     """Пробует edit_text, при ошибке отправляет новое сообщение."""
+=======
+>>>>>>> 78d6a56 (percent bets + fmt):Pizda/main.py
     try:
         await cq.message.edit_text(text, parse_mode="HTML", reply_markup=reply_markup)
         store_message(cq.from_user.id, cq.message.message_id)
@@ -383,6 +386,27 @@ def get_farm_pending(farm) -> int:
     return int(hours * income_per_hour)
 
 
+<<<<<<< HEAD:main.py
+=======
+# ── Minesweeper multiplier ────────────────────────────────────────────────────
+#
+# Логика: каждая безопасная ячейка увеличивает множитель.
+# Стартовый множитель = 1.0, шаг роста зависит от количества мин:
+#   3 мины  → +0.15 за ячейку  (25 ячеек, 22 безопасных)
+#   5 мин   → +0.20 за ячейку  (20 безопасных)
+#   7 мин   → +0.30 за ячейку  (18 безопасных)
+#   10 мин  → +0.45 за ячейку  (15 безопасных)
+#
+# Множитель при кешауте всегда > 1.0 (прибыль гарантирована при >0 ячеек).
+
+MS_STEP = {3: 0.15, 5: 0.20, 7: 0.30, 10: 0.45}
+
+def ms_multiplier(opened_count: int, mines: int) -> float:
+    step = MS_STEP.get(mines, 0.20)
+    return round(1.0 + opened_count * step, 2)
+
+
+>>>>>>> 78d6a56 (percent bets + fmt):Pizda/main.py
 # ── States ───────────────────────────────────────────────────────────────────
 
 class BetState(StatesGroup):
@@ -433,8 +457,12 @@ def format_chips(amount: int) -> str:
             formatted = f"{int(millions)}кк"
         else:
             formatted = f"{millions:.1f}".rstrip('0').rstrip('.') + "кк"
+<<<<<<< HEAD:main.py
         return f"{formatted} фишек"  # всегда "фишек" для миллионов
         return f"{formatted} {noun_form(base_num, 'фишка', 'фишки', 'фишек')}"
+=======
+        return f"{formatted} фишек"
+>>>>>>> 78d6a56 (percent bets + fmt):Pizda/main.py
     elif amount >= 1_000:
         num = amount / 1_000
         if num == int(num):
@@ -446,7 +474,11 @@ def format_chips(amount: int) -> str:
     else:
         formatted = str(amount)
         base_num = amount
+<<<<<<< HEAD:main.py
     
+=======
+
+>>>>>>> 78d6a56 (percent bets + fmt):Pizda/main.py
     return f"{formatted} {noun_form(base_num, 'фишка', 'фишки', 'фишек')}"
 
 def fmt(n: int) -> str:
@@ -789,12 +821,21 @@ def edit_user_kb(user_id: int):
 def _minesweeper_mines_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [
+<<<<<<< HEAD:main.py
             InlineKeyboardButton(text="3 мины (x0.8)",  callback_data="ms_mines_3"),
             InlineKeyboardButton(text="5 мин (x1.2)",   callback_data="ms_mines_5"),
         ],
         [
             InlineKeyboardButton(text="7 мин (x1.8)",   callback_data="ms_mines_7"),
             InlineKeyboardButton(text="10 мин (x2.5)",  callback_data="ms_mines_10"),
+=======
+            InlineKeyboardButton(text="3 мины  (+0.15/яч.)",  callback_data="ms_mines_3"),
+            InlineKeyboardButton(text="5 мин   (+0.20/яч.)",  callback_data="ms_mines_5"),
+        ],
+        [
+            InlineKeyboardButton(text="7 мин   (+0.30/яч.)",  callback_data="ms_mines_7"),
+            InlineKeyboardButton(text="10 мин  (+0.45/яч.)",  callback_data="ms_mines_10"),
+>>>>>>> 78d6a56 (percent bets + fmt):Pizda/main.py
         ],
         [InlineKeyboardButton(text="Назад", callback_data="back_main",
                               icon_custom_emoji_id="5893057118545646106")],
@@ -2061,7 +2102,11 @@ async def rocket_cashout(cq: CallbackQuery, state: FSMContext):
     await cq.answer()
 
 
+<<<<<<< HEAD:main.py
 # ── Minesweeper handlers ──────────────────────────────────────────────────────
+=======
+# ── Minesweeper helpers ───────────────────────────────────────────────────────
+>>>>>>> 78d6a56 (percent bets + fmt):Pizda/main.py
 
 def generate_minesweeper_field(size: int = 5, mines: int = 5):
     field  = [[False]*size for _ in range(size)]
@@ -2074,6 +2119,7 @@ def generate_minesweeper_field(size: int = 5, mines: int = 5):
     return field
 
 def _minesweeper_text(amount: int, field: list, revealed: list, mines: int = 5) -> str:
+<<<<<<< HEAD:main.py
     base_mult    = {3: 0.8, 5: 1.2, 7: 1.8, 10: 2.5}.get(mines, 2.0)
     opened_count = sum(sum(row) for row in revealed)
     multiplier   = base_mult * (1.0 + opened_count * 0.05)
@@ -2082,6 +2128,18 @@ def _minesweeper_text(amount: int, field: list, revealed: list, mines: int = 5) 
         f'<tg-emoji emoji-id="5373141891321699086">💣</tg-emoji> <b>Сапер</b>\n\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ставка: <b>{format_chips(amount)}</b>\n'
         f'<tg-emoji emoji-id="5373141891321699086">💣</tg-emoji> Мин: <b>{mines}</b>\n'
+=======
+    opened_count = sum(cell for row in revealed for cell in row)
+    multiplier   = ms_multiplier(opened_count, mines)
+    potential    = int(amount * multiplier)
+
+    # Описание шага для текущего режима
+    step = MS_STEP.get(mines, 0.20)
+    text = (
+        f'<tg-emoji emoji-id="5373141891321699086">💣</tg-emoji> <b>Сапер</b>\n\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ставка: <b>{format_chips(amount)}</b>\n'
+        f'<tg-emoji emoji-id="5373141891321699086">💣</tg-emoji> Мин: <b>{mines}</b>  (+{step} за ячейку)\n'
+>>>>>>> 78d6a56 (percent bets + fmt):Pizda/main.py
         f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Множитель: <b>x{multiplier:.2f}</b>\n'
         f'<tg-emoji emoji-id="5879814368572478751">🏧</tg-emoji> Можно забрать: <b>{format_chips(potential)}</b>\n\n'
         f'<b>Открывай ячейки:</b>\n'
@@ -2096,6 +2154,11 @@ def _minesweeper_text(amount: int, field: list, revealed: list, mines: int = 5) 
     return text
 
 
+<<<<<<< HEAD:main.py
+=======
+# ── Minesweeper handlers ──────────────────────────────────────────────────────
+
+>>>>>>> 78d6a56 (percent bets + fmt):Pizda/main.py
 @dp.callback_query(F.data == "open_minesweeper")
 async def open_minesweeper(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
@@ -2107,7 +2170,12 @@ async def open_minesweeper(cq: CallbackQuery, state: FSMContext):
         f'<tg-emoji emoji-id="5373141891321699086">💣</tg-emoji> <b>Сапер</b>\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n'
         f'Открывай ячейки и не попадись на мину!\n'
+<<<<<<< HEAD:main.py
         f'Чем больше ячеек откроешь — тем выше множитель.\n\n'
+=======
+        f'Каждая безопасная ячейка увеличивает множитель.\n'
+        f'Множитель при кешауте всегда больше 1x!\n\n'
+>>>>>>> 78d6a56 (percent bets + fmt):Pizda/main.py
         f'<b>Выбери сумму ставки:</b>'
     )
     await safe_edit_or_send(cq, text, reply_markup=bet_amount_kb(bal))
@@ -2125,7 +2193,11 @@ async def minesweeper_set_amount(cq: CallbackQuery, state: FSMContext):
     text = (
         f'<tg-emoji emoji-id="5373141891321699086">💣</tg-emoji> <b>Выбери количество мин</b>\n\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ставка: <b>{format_chips(amount)}</b>\n\n'
+<<<<<<< HEAD:main.py
         f'Больше мин — выше множитель и больше риск!'
+=======
+        f'Больше мин → выше рост множителя за ячейку!'
+>>>>>>> 78d6a56 (percent bets + fmt):Pizda/main.py
     )
     await safe_edit_or_send(cq, text, reply_markup=_minesweeper_mines_kb())
     await cq.answer()
@@ -2163,7 +2235,11 @@ async def minesweeper_custom_amount(msg: Message, state: FSMContext):
     text = (
         f'<tg-emoji emoji-id="5373141891321699086">💣</tg-emoji> <b>Выбери количество мин</b>\n\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ставка: <b>{format_chips(amount)}</b>\n\n'
+<<<<<<< HEAD:main.py
         f'Больше мин — выше множитель и больше риск!'
+=======
+        f'Больше мин → выше рост множителя за ячейку!'
+>>>>>>> 78d6a56 (percent bets + fmt):Pizda/main.py
     )
     await msg.answer(text, parse_mode="HTML", reply_markup=_minesweeper_mines_kb())
 
@@ -2201,6 +2277,10 @@ async def minesweeper_open_cell(cq: CallbackQuery, state: FSMContext):
     revealed[row][col] = True
 
     if field[row][col]:
+<<<<<<< HEAD:main.py
+=======
+        # Попали на мину — проигрыш
+>>>>>>> 78d6a56 (percent bets + fmt):Pizda/main.py
         update_balance(user_id, -amount, win=False, game_type="minesweeper")
         await state.clear()
         text = (
@@ -2232,6 +2312,7 @@ async def minesweeper_cashout(cq: CallbackQuery, state: FSMContext):
     amount      = data.get("minesweeper_amount", 0)
     revealed    = data.get("minesweeper_revealed", [])
     mines_count = data.get("minesweeper_mines", 5)
+<<<<<<< HEAD:main.py
     opened_count = sum(sum(row) for row in revealed)
     base_mult    = {3: 0.8, 5: 1.2, 7: 1.8, 10: 2.5}.get(mines_count, 2.0)
     multiplier   = base_mult * (1.0 + opened_count * 0.05)
@@ -2239,6 +2320,22 @@ async def minesweeper_cashout(cq: CallbackQuery, state: FSMContext):
 
     update_balance(user_id, net_profit, win=True, game_type="minesweeper")
     await state.clear()
+=======
+
+    opened_count = sum(cell for row in revealed for cell in row)
+
+    if opened_count == 0:
+        await cq.answer("Сначала откройте хотя бы одну ячейку!", show_alert=True)
+        return
+
+    multiplier = ms_multiplier(opened_count, mines_count)
+    payout     = int(amount * multiplier)
+    net_profit = payout - amount
+
+    update_balance(user_id, net_profit, win=True, game_type="minesweeper")
+    await state.clear()
+
+>>>>>>> 78d6a56 (percent bets + fmt):Pizda/main.py
     text = (
         f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> <b>Вы забрали выигрыш!</b>\n\n'
         f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Открыто ячеек: <b>{opened_count}</b>\n'
@@ -2284,9 +2381,12 @@ async def daily_bonus_task():
         await asyncio.sleep(60)
 
 
+<<<<<<< HEAD:main.py
 
 
 
+=======
+>>>>>>> 78d6a56 (percent bets + fmt):Pizda/main.py
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def main():
