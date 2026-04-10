@@ -5,11 +5,13 @@ import time
 from datetime import datetime, timedelta
 import pytz
 from dotenv import load_dotenv
-import psycopg2
 from psycopg2.extras import RealDictCursor
 from psycopg2 import pool
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
+    LabeledPrice, PreCheckoutQuery, ReplyKeyboardMarkup, KeyboardButton
+)
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -34,41 +36,59 @@ def get_db_pool():
 last_bets = {}
 last_messages = {}
 
-async def delete_old_message(user_id):
-    if user_id in last_messages:
-        try:
-            msg_id = last_messages[user_id]
-            await bot.delete_message(user_id, msg_id)
-        except:
-            pass
 
-def store_message(user_id, msg_id):
-    last_messages[user_id] = msg_id
-    save_message_id(user_id, msg_id)
+# ── Reply-клавиатура (нижняя панель) ─────────────────────────────────────────
 
-async def cleanup_old_messages():
-    rows = load_all_message_ids()
-    if not rows:
-        return
-    for user_id, msg_id in rows:
-        try:
-            await bot.delete_message(user_id, msg_id)
-            last_messages[user_id] = None
-        except:
-            pass
+def main_reply_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(
+                    text="🎰 Казино",
+                    icon_custom_emoji_id="5258882890059091157"
+                ),
+                KeyboardButton(
+                    text="👤 Профиль",
+                    icon_custom_emoji_id="5870994129244131212"
+                ),
+            ],
+            [
+                KeyboardButton(
+                    text="🪙 Баланс",
+                    icon_custom_emoji_id="5904462880941545555"
+                ),
+                KeyboardButton(
+                    text="🔄 Сбросить баланс",
+                    icon_custom_emoji_id="5345906554510012647"
+                ),
+            ],
+            [
+                KeyboardButton(
+                    text="⛏ Ферма",
+                    icon_custom_emoji_id="5904462880941545555"
+                ),
+                KeyboardButton(
+                    text="📊 История",
+                    icon_custom_emoji_id="5870930636742595124"
+                ),
+            ],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
 
 async def safe_edit_or_send(cq: CallbackQuery, text: str, reply_markup=None):
     """Пробует edit_text, при ошибке отправляет новое сообщение."""
     try:
         await cq.message.edit_text(text, parse_mode="HTML", reply_markup=reply_markup)
-        store_message(cq.from_user.id, cq.message.message_id)
     except Exception:
         try:
             await cq.message.delete()
         except:
             pass
-        response = await cq.message.answer(text, parse_mode="HTML", reply_markup=reply_markup)
-        store_message(cq.from_user.id, response.message_id)
+        await cq.message.answer(text, parse_mode="HTML", reply_markup=reply_markup)
+
 
 def db_connect():
     return get_db_pool().getconn()
@@ -99,7 +119,7 @@ def init_db():
     conn = db_connect()
     try:
         with conn.cursor() as cur:
-            cur.execute("ALTER TABLE users ADD COLUMN last_message_id INTEGER")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_message_id INTEGER")
         conn.commit()
     except:
         conn.rollback()
@@ -238,24 +258,6 @@ def set_balance(user_id: int, amount: int):
         with conn.cursor() as cur:
             cur.execute("UPDATE users SET balance = %s WHERE user_id=%s", (amount, user_id))
         conn.commit()
-    finally:
-        db_release(conn)
-
-def save_message_id(user_id: int, msg_id: int):
-    conn = db_connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE users SET last_message_id = %s WHERE user_id = %s", (msg_id, user_id))
-        conn.commit()
-    finally:
-        db_release(conn)
-
-def load_all_message_ids():
-    conn = db_connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT user_id, last_message_id FROM users WHERE last_message_id IS NOT NULL")
-            return cur.fetchall()
     finally:
         db_release(conn)
 
@@ -433,8 +435,7 @@ def format_chips(amount: int) -> str:
             formatted = f"{int(millions)}кк"
         else:
             formatted = f"{millions:.1f}".rstrip('0').rstrip('.') + "кк"
-        return f"{formatted} фишек"  # всегда "фишек" для миллионов
-        return f"{formatted} {noun_form(base_num, 'фишка', 'фишки', 'фишек')}"
+        return f"{formatted} фишек"
     elif amount >= 1_000:
         num = amount / 1_000
         if num == int(num):
@@ -446,7 +447,7 @@ def format_chips(amount: int) -> str:
     else:
         formatted = str(amount)
         base_num = amount
-    
+
     return f"{formatted} {noun_form(base_num, 'фишка', 'фишки', 'фишек')}"
 
 def fmt(n: int) -> str:
@@ -516,7 +517,7 @@ BET_LABELS = {
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 
-# ── Keyboards ─────────────────────────────────────────────────────────────────
+# ── Inline keyboards ─────────────────────────────────────────────────────────
 
 def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -860,35 +861,28 @@ def farm_text(user_id: int) -> str:
 
 @dp.message(CommandStart())
 async def cmd_start(msg: Message, state: FSMContext):
-    try:
-        await msg.delete()
-    except:
-        pass
-    await delete_old_message(msg.from_user.id)
-    bal = get_or_create_user(msg.from_user.id, msg.from_user.username or "игрок")
     await state.clear()
+    bal = get_or_create_user(msg.from_user.id, msg.from_user.username or "игрок")
     text = (
         f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Добро пожаловать в Казино!</b>\n\n'
         f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ваш баланс: <b>{format_chips(bal)}</b>\n\n'
-        f'<tg-emoji emoji-id="5778672437122045013">📦</tg-emoji> Доступные игры:\n'
+        f'<tg-emoji emoji-id="5778672437122045013">📦</tg-emoji> Доступные игры:'
     )
-    response = await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
-    store_message(msg.from_user.id, response.message_id)
+    await msg.answer(text, parse_mode="HTML", reply_markup=main_reply_kb())
+    await msg.answer(
+        '<tg-emoji emoji-id="5778672437122045013">📦</tg-emoji> <b>Выберите игру:</b>',
+        parse_mode="HTML",
+        reply_markup=main_menu_kb()
+    )
 
 
 @dp.message(Command("ping"))
 async def cmd_ping(msg: Message):
-    try:
-        await msg.delete()
-    except:
-        pass
-    await delete_old_message(msg.from_user.id)
     start_time = time.perf_counter()
     sent_msg = await msg.answer(
         '<tg-emoji emoji-id="5983150113483134607">⏰</tg-emoji> ПОНГ...',
         parse_mode="HTML"
     )
-    store_message(msg.from_user.id, sent_msg.message_id)
     end_time = time.perf_counter()
     response_time_ms = round((end_time - start_time) * 1000, 2)
     await sent_msg.edit_text(
@@ -897,6 +891,116 @@ async def cmd_ping(msg: Message):
         parse_mode="HTML"
     )
 
+
+# ── Reply keyboard text handlers ──────────────────────────────────────────────
+
+@dp.message(F.text == "🎰 Казино")
+async def reply_casino(msg: Message, state: FSMContext):
+    await state.clear()
+    bal = get_balance(msg.from_user.id)
+    if not bal and bal != 0:
+        get_or_create_user(msg.from_user.id, msg.from_user.username or "игрок")
+        bal = STARTING_BALANCE
+    text = (
+        f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Казино</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>'
+    )
+    await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
+
+
+@dp.message(F.text == "👤 Профиль")
+async def reply_profile(msg: Message, state: FSMContext):
+    row = get_user(msg.from_user.id)
+    if not row:
+        await msg.answer(
+            '<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Сначала запустите /start',
+            parse_mode="HTML"
+        )
+        return
+    _, username, balance, wins, losses, *_ = row
+    total = wins + losses
+    rate  = round(wins / total * 100, 1) if total else 0
+    text = (
+        f'<tg-emoji emoji-id="5870921681735781843">📊</tg-emoji> <b>Профиль</b>\n\n'
+        f'<tg-emoji emoji-id="5870994129244131212">👤</tg-emoji> Игрок: <b>{username or "Неизвестно"}</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(balance)}</b>\n'
+        f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Побед: <b>{wins}</b>\n'
+        f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Поражений: <b>{losses}</b>\n'
+        f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Процент побед: <b>{rate}%</b>'
+    )
+    await msg.answer(text, parse_mode="HTML", reply_markup=stats_menu_kb())
+
+
+@dp.message(F.text == "🪙 Баланс")
+async def reply_balance(msg: Message):
+    bal = get_balance(msg.from_user.id)
+    await msg.answer(
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ваш баланс: <b>{format_chips(bal)}</b>',
+        parse_mode="HTML"
+    )
+
+
+@dp.message(F.text == "🔄 Сбросить баланс")
+async def reply_reset(msg: Message, state: FSMContext):
+    reset_balance(msg.from_user.id)
+    await state.clear()
+    await msg.answer(
+        f'<tg-emoji emoji-id="5345906554510012647">🔄</tg-emoji> <b>Баланс сброшен!</b>\n'
+        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>1000 фишек</b>',
+        parse_mode="HTML",
+        reply_markup=main_menu_kb()
+    )
+
+
+@dp.message(F.text == "⛏ Ферма")
+async def reply_farm(msg: Message):
+    user_id = msg.from_user.id
+    text = farm_text(user_id)
+    await msg.answer(text, parse_mode="HTML", reply_markup=farm_kb(user_id))
+
+
+@dp.message(F.text == "📊 История")
+async def reply_history(msg: Message):
+    user_id = msg.from_user.id
+    history = get_history(user_id, limit=15)
+
+    if not history:
+        text = f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> <b>Нет истории ставок</b>'
+    else:
+        text = f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> <b>История ставок (последние 15):</b>\n\n'
+        for entry in history:
+            status_emoji = (
+                f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji>'
+                if entry['is_win'] else
+                f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji>'
+            )
+            game_names = {"coin": "Монета", "rocket": "Ракета", "minesweeper": "Сапер",
+                          "admin_topup": "Пополнение", "farm": "Ферма"}
+            game_name = game_names.get(entry['game_type'], "Рулетка")
+            sign = '+' if entry['is_win'] else '-'
+            text += f'{status_emoji} {sign}{entry["amount"]} — {game_name}\n'
+
+    stats = get_user_history_stats(user_id)
+    if stats and (stats['win_count'] or stats['lose_count']):
+        total_won  = stats['total_won']  or 0
+        total_lost = stats['total_lost'] or 0
+        text += f'\n<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Выигрыши: <b>+{total_won}</b>\n'
+        text += f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Проигрыши: <b>-{total_lost}</b>\n'
+        net = total_won - total_lost
+        if net > 0:
+            text += f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Итог: <b>+{net}</b>'
+        elif net < 0:
+            text += f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Итог: <b>{net}</b>'
+        else:
+            text += f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Итог: <b>0</b>'
+
+    await msg.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Назад в статистику", callback_data="stats",
+                              icon_custom_emoji_id="5893057118545646106")],
+    ]))
+
+
+# ── Callback handlers ─────────────────────────────────────────────────────────
 
 @dp.callback_query(F.data == "back_main")
 async def back_main(cq: CallbackQuery, state: FSMContext):
@@ -954,7 +1058,7 @@ async def show_history(cq: CallbackQuery):
                           "admin_topup": "Пополнение", "farm": "Ферма"}
             game_name = game_names.get(entry['game_type'], "Рулетка")
             sign = '+' if entry['is_win'] else '-'
-            text += f'{status_emoji} {sign}{entry["amount"]} - {game_name}\n'
+            text += f'{status_emoji} {sign}{entry["amount"]} — {game_name}\n'
 
     stats = get_user_history_stats(user_id)
     if stats and (stats['win_count'] or stats['lose_count']):
@@ -1618,18 +1722,12 @@ async def cmd_admin(msg: Message, state: FSMContext):
             parse_mode="HTML"
         )
         return
-    try:
-        await msg.delete()
-    except:
-        pass
-    await delete_old_message(msg.from_user.id)
     await state.set_state(AdminState.choosing_action)
     text = (
         '<tg-emoji emoji-id="5870982283724328568">⚙️</tg-emoji> <b>Админ-панель</b>\n\n'
         'Выберите действие:'
     )
-    response = await msg.answer(text, parse_mode="HTML", reply_markup=admin_menu_kb())
-    store_message(msg.from_user.id, response.message_id)
+    await msg.answer(text, parse_mode="HTML", reply_markup=admin_menu_kb())
 
 
 @dp.callback_query(F.data == "admin_users")
@@ -1716,7 +1814,7 @@ async def admin_show_user_history(cq: CallbackQuery):
                           "admin_topup": "Пополнение от админа", "farm": "Ферма"}
             game_name = game_names.get(entry['game_type'], "Рулетка")
             sign = '+' if entry['is_win'] else '-'
-            text += f'{status_emoji} {sign}{entry["amount"]} - {game_name}\n'
+            text += f'{status_emoji} {sign}{entry["amount"]} — {game_name}\n'
 
     stats = get_user_history_stats(user_id)
     if stats and (stats['win_count'] or stats['lose_count']):
@@ -1760,10 +1858,6 @@ async def ask_new_balance(cq: CallbackQuery, state: FSMContext):
 async def process_new_balance(msg: Message, state: FSMContext):
     if msg.from_user.id != ADMIN_ID:
         return
-    try:
-        await msg.delete()
-    except:
-        pass
     try:
         new_balance = int(msg.text.strip())
         assert new_balance >= 0
@@ -1833,10 +1927,6 @@ async def process_broadcast(msg: Message, state: FSMContext):
         return
 
     broadcast_text = msg.text
-    try:
-        await msg.delete()
-    except:
-        pass
     users = get_all_users_full()
 
     success_count = 0
@@ -2284,15 +2374,11 @@ async def daily_bonus_task():
         await asyncio.sleep(60)
 
 
-
-
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def main():
     init_db()
     print("🎰 Casino bot started!")
-    await cleanup_old_messages()
     asyncio.create_task(daily_bonus_task())
     try:
         await dp.start_polling(bot)
