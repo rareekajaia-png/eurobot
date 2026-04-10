@@ -31,7 +31,7 @@ class Database:
         """Создание пула соединений и инициализация таблиц"""
         self.pool = await asyncpg.create_pool(self.url)
         async with self.pool.acquire() as conn:
-            # ИСПРАВЛЕНО: Используем f-строку для DEFAULT, так как параметры $1 тут не работают
+            # Создаем таблицу, если её нет
             await conn.execute(f'''
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
@@ -41,11 +41,21 @@ class Database:
                     last_farm TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 );
             ''')
+            
+            # ПРОВЕРКА: Добавляем колонку last_farm, если таблица уже была, но колонки нет
+            await conn.execute('''
+                DO $$ 
+                BEGIN 
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                   WHERE table_name='users' AND column_name='last_farm') THEN
+                        ALTER TABLE users ADD COLUMN last_farm TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+                    END IF;
+                END $$;
+            ''')
 
     async def get_user(self, user_id: int):
         """Получение или регистрация пользователя (Атомарно)"""
         async with self.pool.acquire() as conn:
-            # ИСПРАВЛЕНО: Используем ON CONFLICT для предотвращения ошибок при одновременных запросах
             row = await conn.fetchrow('''
                 INSERT INTO users (user_id) 
                 VALUES ($1) 
@@ -74,7 +84,7 @@ class Database:
             return await conn.fetch("SELECT user_id, balance FROM users ORDER BY balance DESC LIMIT $1", limit)
 
     async def get_all_user_ids(self):
-        """Для массовых рассылок/бонусов"""
+        """Для массовых рассылок"""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch("SELECT user_id FROM users")
             return [r['user_id'] for r in rows]
@@ -106,7 +116,7 @@ def format_chips(amount: int) -> str:
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# --- Обработчики (Handlers) ---
+# --- Обработчики ---
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
@@ -114,8 +124,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await db.get_user(message.from_user.id)
     await message.answer(
         f"🎰 <b>Добро пожаловать, {message.from_user.first_name}!</b>\n\n"
-        f"Вам начислено {format_chips(STARTING_BALANCE)} стартовых фишек.\n"
-        "Используйте меню ниже, чтобы начать игру.",
+        f"Стартовый баланс: {format_chips(STARTING_BALANCE)} фишек.\n"
+        "Используйте меню для игры.",
         reply_markup=main_reply_kb(),
         parse_mode="HTML"
     )
@@ -135,7 +145,13 @@ async def profile_handler(message: types.Message):
 @dp.message(F.text == "🌾 Ферма")
 async def farm_handler(message: types.Message):
     u = await db.get_user(message.from_user.id)
-    last_farm = u['last_farm']
+    
+    last_farm = u.get('last_farm')
+    if not last_farm:
+        # Если вдруг колонки не было или она пуста
+        await db.reset_farm(message.from_user.id)
+        return await message.answer("🚜 Ваша ферма только что начала работу! Приходите через час.")
+
     now = datetime.now(last_farm.tzinfo)
     diff = now - last_farm
     
@@ -143,7 +159,7 @@ async def farm_handler(message: types.Message):
     pending = int(hours * 50) 
     
     if pending < 1:
-        await message.answer("🐥 Ваша ферма еще не принесла дохода. Приходите позже!")
+        await message.answer("🐥 Ваша ферма еще не принесла дохода. Нужно подождать хотя бы час!")
     else:
         await db.update_balance(message.from_user.id, pending)
         await db.reset_farm(message.from_user.id)
@@ -157,9 +173,7 @@ async def farm_handler(message: types.Message):
 @dp.message(F.text == "🚀 Ракета")
 async def rocket_menu(message: types.Message):
     await message.answer(
-        "🚀 <b>Добро пожаловать в игру Ракета!</b>\n\n"
-        "Правила просты: если ракета взлетает — ваш баланс удваивается.\n"
-        "Если взрывается — ставка сгорает.\n\n"
+        "🚀 <b>Добро пожаловать в игру Ракета!</b>\n"
         "Выберите сумму ставки:",
         reply_markup=rocket_kb(),
         parse_mode="HTML"
@@ -171,15 +185,11 @@ async def rocket_game(callback: types.CallbackQuery):
     u = await db.get_user(callback.from_user.id)
     
     if u['balance'] < bet:
-        return await callback.answer("❌ Недостаточно фишек на балансе!", show_alert=True)
+        return await callback.answer("❌ Недостаточно фишек!", show_alert=True)
 
     try:
-        msg = await callback.message.edit_text("🚀 Ракета на старте... 3...")
-        await asyncio.sleep(0.7)
-        await msg.edit_text("🚀 Ракета на старте... 2...")
-        await asyncio.sleep(0.7)
-        await msg.edit_text("🚀 Ракета на старте... 1...")
-        await asyncio.sleep(0.7)
+        msg = await callback.message.edit_text("🚀 Ракета на старте...")
+        await asyncio.sleep(1)
         await msg.edit_text("🔥 ПОЕХАЛИ!")
         await asyncio.sleep(1)
     except TelegramBadRequest:
@@ -187,23 +197,25 @@ async def rocket_game(callback: types.CallbackQuery):
 
     if random.random() > 0.5:
         await db.update_balance(callback.from_user.id, bet, "wins")
+        new_balance = u['balance'] + bet
         await callback.message.edit_text(
-            f"📈 <b>Ракета успешно вышла на орбиту!</b>\n"
-            f"Выигрыш: <b>+{format_chips(bet)}</b> (всего {format_chips(u['balance'] + bet)})\n\n"
-            "Сыграем еще?", reply_markup=rocket_kb(), parse_mode="HTML"
+            f"📈 <b>Успех!</b>\nВыигрыш: <b>+{format_chips(bet)}</b>\n"
+            f"Баланс: <b>{format_chips(new_balance)}</b>",
+            reply_markup=rocket_kb(), parse_mode="HTML"
         )
     else:
         await db.update_balance(callback.from_user.id, -bet, "losses")
+        new_balance = u['balance'] - bet
         await callback.message.edit_text(
-            f"💥 <b>Ракета взорвалась в стратосфере...</b>\n"
-            f"Потеряно: <b>{format_chips(bet)}</b> фишек.\n\n"
-            "Не повезло сейчас — повезет потом!", reply_markup=rocket_kb(), parse_mode="HTML"
+            f"💥 <b>Ракета взорвалась...</b>\nПотеряно: <b>{format_chips(bet)}</b>\n"
+            f"Баланс: <b>{format_chips(new_balance)}</b>",
+            reply_markup=rocket_kb(), parse_mode="HTML"
         )
 
 @dp.message(F.text == "🏆 Топ")
 async def top_handler(message: types.Message):
     top = await db.get_top_players(10)
-    text = "🏆 <b>ТОП-10 Богатейших Игроков:</b>\n\n"
+    text = "🏆 <b>ТОП-10 Богатеев:</b>\n\n"
     for i, row in enumerate(top, 1):
         text += f"{i}. 🆔 <code>{row['user_id']}</code> — <b>{format_chips(row['balance'])}</b>\n"
     await message.answer(text, parse_mode="HTML")
@@ -216,30 +228,25 @@ async def daily_bonus_loop():
             target += timedelta(days=1)
         
         wait_time = (target - now).total_seconds()
-        logger.info(f"До следующего бонуса: {wait_time/3600:.2f} ч.")
         await asyncio.sleep(wait_time)
 
         ids = await db.get_all_user_ids()
         for u_id in ids:
             try:
                 await db.update_balance(u_id, 500)
-                await bot.send_message(
-                    u_id, 
-                    "🎁 <b>Ежедневный бонус!</b>\nВам начислено 500 фишек. Удачи!",
-                    parse_mode="HTML"
-                )
-            except Exception:
+                await bot.send_message(u_id, "🎁 +500 ежедневных фишек!")
+            except:
                 continue
         await asyncio.sleep(60)
 
 async def main():
     await db.connect()
     asyncio.create_task(daily_bonus_loop())
-    logger.info("Бот успешно запущен!")
+    logger.info("Бот запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Бот остановлен")
+        pass
