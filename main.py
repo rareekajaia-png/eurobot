@@ -31,23 +31,27 @@ class Database:
         """Создание пула соединений и инициализация таблиц"""
         self.pool = await asyncpg.create_pool(self.url)
         async with self.pool.acquire() as conn:
-            await conn.execute('''
+            # ИСПРАВЛЕНО: Используем f-строку для DEFAULT, так как параметры $1 тут не работают
+            await conn.execute(f'''
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
-                    balance BIGINT DEFAULT $1,
+                    balance BIGINT DEFAULT {STARTING_BALANCE},
                     wins INTEGER DEFAULT 0,
                     losses INTEGER DEFAULT 0,
                     last_farm TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 );
-            ''', STARTING_BALANCE)
+            ''')
 
     async def get_user(self, user_id: int):
-        """Получение или регистрация пользователя"""
+        """Получение или регистрация пользователя (Атомарно)"""
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
-            if not row:
-                await conn.execute("INSERT INTO users (user_id) VALUES ($1)", user_id)
-                row = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
+            # ИСПРАВЛЕНО: Используем ON CONFLICT для предотвращения ошибок при одновременных запросах
+            row = await conn.fetchrow('''
+                INSERT INTO users (user_id) 
+                VALUES ($1) 
+                ON CONFLICT (user_id) DO UPDATE SET user_id = EXCLUDED.user_id
+                RETURNING *
+            ''', user_id)
             return dict(row)
 
     async def update_balance(self, user_id: int, amount: int, stats_col: str = None):
@@ -131,13 +135,12 @@ async def profile_handler(message: types.Message):
 @dp.message(F.text == "🌾 Ферма")
 async def farm_handler(message: types.Message):
     u = await db.get_user(message.from_user.id)
-    # Расчет накоплений
     last_farm = u['last_farm']
     now = datetime.now(last_farm.tzinfo)
     diff = now - last_farm
     
-    hours = min(diff.total_seconds() / 3600, 24) # Максимум за 24 часа
-    pending = int(hours * 50) # 50 фишек в час
+    hours = min(diff.total_seconds() / 3600, 24) 
+    pending = int(hours * 50) 
     
     if pending < 1:
         await message.answer("🐥 Ваша ферма еще не принесла дохода. Приходите позже!")
@@ -170,7 +173,6 @@ async def rocket_game(callback: types.CallbackQuery):
     if u['balance'] < bet:
         return await callback.answer("❌ Недостаточно фишек на балансе!", show_alert=True)
 
-    # Визуализация полета
     try:
         msg = await callback.message.edit_text("🚀 Ракета на старте... 3...")
         await asyncio.sleep(0.7)
@@ -187,7 +189,7 @@ async def rocket_game(callback: types.CallbackQuery):
         await db.update_balance(callback.from_user.id, bet, "wins")
         await callback.message.edit_text(
             f"📈 <b>Ракета успешно вышла на орбиту!</b>\n"
-            f"Выигрыш: <b>+{format_chips(bet)}</b> (всего {format_chips(bet*2)})\n\n"
+            f"Выигрыш: <b>+{format_chips(bet)}</b> (всего {format_chips(u['balance'] + bet)})\n\n"
             "Сыграем еще?", reply_markup=rocket_kb(), parse_mode="HTML"
         )
     else:
@@ -206,9 +208,7 @@ async def top_handler(message: types.Message):
         text += f"{i}. 🆔 <code>{row['user_id']}</code> — <b>{format_chips(row['balance'])}</b>\n"
     await message.answer(text, parse_mode="HTML")
 
-# --- Фоновые задачи ---
 async def daily_bonus_loop():
-    """Рассылка бонусов раз в сутки в 12:00"""
     while True:
         now = datetime.now()
         target = now.replace(hour=12, minute=0, second=0, microsecond=0)
@@ -230,17 +230,11 @@ async def daily_bonus_loop():
                 )
             except Exception:
                 continue
-        await asyncio.sleep(60) # Защита от повторного срабатывания в ту же секунду
+        await asyncio.sleep(60)
 
-# --- Главная функция запуска ---
 async def main():
-    # Подключаемся к БД
     await db.connect()
-    
-    # Запускаем фоновую задачу бонусов
     asyncio.create_task(daily_bonus_loop())
-    
-    # Запуск бота
     logger.info("Бот успешно запущен!")
     await dp.start_polling(bot)
 
