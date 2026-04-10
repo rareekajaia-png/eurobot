@@ -229,7 +229,7 @@ def add_daily_bonus(user_id: int):
     conn = db_connect()
     try:
         with conn.cursor() as cur:
-            cur.execute("UPDATE users SET balance = balance + 500 WHERE user_id=%s", (user_id,))
+            cur.execute("UPDATE users SET balance = balance + 10000 WHERE user_id=%s", (user_id,))
         conn.commit()
     finally:
         db_release(conn)
@@ -2364,7 +2364,7 @@ async def daily_bonus_task():
                 await bot.send_message(
                     user_id,
                     f'<tg-emoji emoji-id="6032644646587338669">🎁</tg-emoji> <b>Ежедневный бонус!</b>\n\n'
-                    f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> Вам начислено <b>+500 фишек</b>\n'
+                    f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> Вам начислено <b>+10000 фишек</b>\n'
                     f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Текущий баланс: <b>{format_chips(new_bal)}</b>\n\n'
                     f'<i>Удачной игры!</i>',
                     parse_mode="HTML"
