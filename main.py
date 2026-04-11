@@ -724,7 +724,7 @@ def users_list_kb(users: list, page: int = 0) -> InlineKeyboardMarkup:
     page_users = users[page * per_page : (page + 1) * per_page]
     buttons = [
         [_btn(
-            f"{u['username'] or f'ID {u[\"user_id\"]}'} ({format_chips(u['balance'])})",
+            (u['username'] or ('ID ' + str(u['user_id']))) + f" ({format_chips(u['balance'])})",
             f"admin_edit_user_{u['user_id']}",
             icon="5870994129244131212",
         )]
