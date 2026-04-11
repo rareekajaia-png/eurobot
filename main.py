@@ -20,9 +20,9 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 load_dotenv()
-TOKEN          = os.getenv("BOT_TOKEN")
-DATABASE_URL   = os.getenv("DATABASE_URL")
-ADMIN_ID       = int(os.getenv("ADMIN_ID", "0"))
+TOKEN            = os.getenv("BOT_TOKEN")
+DATABASE_URL     = os.getenv("DATABASE_URL")
+ADMIN_ID         = int(os.getenv("ADMIN_ID", "0"))
 STARTING_BALANCE = 1_000
 
 bot = Bot(token=TOKEN)
@@ -30,7 +30,9 @@ dp  = Dispatcher(storage=MemoryStorage())
 
 db_pool: pool.SimpleConnectionPool | None = None
 
+
 # ── Cooldown protection ────────────────────────────────────────────────────
+
 _COOLDOWNS: dict[int, float] = {}
 
 def check_cooldown(user_id: int, seconds: float = 1.0) -> bool:
@@ -94,6 +96,18 @@ def init_db():
                     FOREIGN KEY (user_id) REFERENCES users(user_id)
                 )
             """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS businesses (
+                    user_id      BIGINT NOT NULL,
+                    biz_type     TEXT   NOT NULL,
+                    last_collect TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, biz_type),
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                )
+            """)
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_businesses_user ON businesses(user_id)"
+            )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -141,11 +155,6 @@ def get_balance(user_id: int) -> int:
         db_release(conn)
 
 def atomic_update_balance(user_id: int, delta: int) -> int | None:
-    """
-    Атомарно меняет баланс.
-    При delta < 0 проверяет, что баланс достаточен.
-    Возвращает новый баланс или None если средств недостаточно.
-    """
     conn = db_connect()
     try:
         with conn.cursor() as cur:
@@ -177,6 +186,7 @@ def atomic_update_balance(user_id: int, delta: int) -> int | None:
 def update_balance(user_id: int, delta: int, win: bool, game_type: str = "roulette") -> int | None:
     col  = "wins" if win else "losses"
     conn = db_connect()
+    row  = None
     try:
         with conn.cursor() as cur:
             if delta < 0:
@@ -311,7 +321,7 @@ def get_user_history_stats(user_id: int) -> dict | None:
                    COUNT(CASE WHEN is_win     THEN 1 END) AS win_count,
                    COUNT(CASE WHEN NOT is_win THEN 1 END) AS lose_count
                    FROM history
-                   WHERE user_id = %s AND game_type != 'admin_topup'""",
+                   WHERE user_id = %s AND game_type NOT IN ('admin_topup','farm','business')""",
                 (user_id,),
             )
             return cur.fetchone()
@@ -398,6 +408,64 @@ def get_farm_pending(farm: dict) -> int:
     return int(hours * FARM_INCOME.get(farm["level"], 0))
 
 
+# ── Business DB ────────────────────────────────────────────────────────────
+
+BUSINESSES: dict[str, dict] = {
+    "kiosk":      {"name": "Ларёк",          "emoji": "🏪", "cost":       10_000, "income":       500},
+    "cafe":       {"name": "Кафе",           "emoji": "☕", "cost":       50_000, "income":     2_500},
+    "shop247":    {"name": "Магазин 24/7",   "emoji": "🏬", "cost":      150_000, "income":     7_500},
+    "restaurant": {"name": "Ресторан",       "emoji": "🍽", "cost":      500_000, "income":    25_000},
+    "club":       {"name": "Ночной клуб",    "emoji": "🎸", "cost":    1_500_000, "income":    75_000},
+    "casino_biz": {"name": "Казино",         "emoji": "🎰", "cost":    5_000_000, "income":   250_000},
+    "mall":       {"name": "Торговый центр", "emoji": "🏢", "cost":   15_000_000, "income":   750_000},
+    "hotel":      {"name": "Отель",          "emoji": "🏨", "cost":   50_000_000, "income": 2_500_000},
+}
+
+def get_user_businesses(user_id: int) -> dict[str, dict]:
+    conn = db_connect()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM businesses WHERE user_id = %s", (user_id,))
+            return {row["biz_type"]: dict(row) for row in cur.fetchall()}
+    finally:
+        db_release(conn)
+
+def buy_business(user_id: int, biz_type: str):
+    conn = db_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO businesses (user_id, biz_type, last_collect) "
+                "VALUES (%s, %s, CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING",
+                (user_id, biz_type),
+            )
+        conn.commit()
+    finally:
+        db_release(conn)
+
+def collect_business(user_id: int, biz_type: str):
+    conn = db_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE businesses SET last_collect = CURRENT_TIMESTAMP "
+                "WHERE user_id = %s AND biz_type = %s",
+                (user_id, biz_type),
+            )
+        conn.commit()
+    finally:
+        db_release(conn)
+
+def get_business_pending(row: dict, biz_type: str) -> int:
+    if not row or biz_type not in BUSINESSES:
+        return 0
+    last = row["last_collect"]
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=pytz.utc)
+    hours = min((datetime.now(pytz.utc) - last).total_seconds() / 3600, 24)
+    return int(hours * BUSINESSES[biz_type]["income"])
+
+
 # ── States ─────────────────────────────────────────────────────────────────
 
 class BetState(StatesGroup):
@@ -455,36 +523,36 @@ def format_chips(amount: int) -> str:
     return f"{amount} {noun_form(amount, 'фишка', 'фишки', 'фишек')}"
 
 def te(emoji_id: str, emoji: str) -> str:
-    """Shortcut for tg-emoji tag."""
     return f'<tg-emoji emoji-id="{emoji_id}">{emoji}</tg-emoji>'
 
-# Часто используемые tg-emoji константы
-E_CASINO   = te("5258882890059091157", "🎰")
-E_COIN     = te("5904462880941545555", "🪙")
-E_COIN2    = te("5890848474563352982", "🪙")   # «отправить деньги»
-E_CHART    = te("5870930636742595124", "📊")
-E_CHART2   = te("5870921681735781843", "📊")
-E_WIN      = te("5870633910337015697", "✅")
-E_LOSE     = te("5870657884844462243", "❌")
-E_USER     = te("5870994129244131212", "👤")
-E_USERS    = te("5870772616305839506", "👥")
-E_GEAR     = te("5870982283724328568", "⚙️")
-E_RESET    = te("5345906554510012647", "🔄")
-E_FARM     = te("5778672437122045013", "📦")
-E_CLOCK    = te("5983150113483134607", "⏰")
-E_GIFT     = te("6032644646587338669", "🎁")
-E_PARTY    = te("6041731551845159060", "🎉")
-E_PEN      = te("5870676941614354370", "🖋")
-E_BACK     = te("5893057118545646106", "📰")
-E_ROCKET   = te("5373139891223741704", "🚀")
-E_BOMB     = te("5373141891321699086", "💣")
-E_HORN     = te("6039422865189638057", "📣")
-E_ALPHA    = te("5771851822897566479", "🔡")
-E_STAR     = te("5870982283724328568", "⭐")
-E_ATM      = te("5879814368572478751", "🏧")
-E_PING     = te("5983150113483134607", "⏰")
-E_PICK     = te("5904462880941545555", "⛏")   # fallback — нет нужного id
-E_HISTORY  = te("5870930636742595124", "📊")
+# tg-emoji константы
+E_CASINO     = te("5258882890059091157", "🎰")
+E_COIN       = te("5904462880941545555", "🪙")
+E_COIN2      = te("5890848474563352982", "🪙")
+E_CHART      = te("5870930636742595124", "📊")
+E_CHART2     = te("5870921681735781843", "📊")
+E_WIN        = te("5870633910337015697", "✅")
+E_LOSE       = te("5870657884844462243", "❌")
+E_USER       = te("5870994129244131212", "👤")
+E_USERS      = te("5870772616305839506", "👥")
+E_GEAR       = te("5870982283724328568", "⚙️")
+E_RESET      = te("5345906554510012647", "🔄")
+E_FARM       = te("5778672437122045013", "📦")
+E_CLOCK      = te("5983150113483134607", "⏰")
+E_GIFT       = te("6032644646587338669", "🎁")
+E_PARTY      = te("6041731551845159060", "🎉")
+E_PEN        = te("5870676941614354370", "🖋")
+E_BACK       = te("5893057118545646106", "📰")
+E_ROCKET     = te("5373139891223741704", "🚀")
+E_BOMB       = te("5373141891321699086", "💣")
+E_HORN       = te("6039422865189638057", "📣")
+E_ALPHA      = te("5771851822897566479", "🔡")
+E_ATM        = te("5879814368572478751", "🏧")
+E_PING       = te("5983150113483134607", "⏰")
+E_HISTORY    = te("5870930636742595124", "📊")
+E_BRIEFCASE  = te("5773781976905421370", "💼")
+E_TAG        = te("5886285355279193209", "🏷")
+E_BOX        = te("5884479287171485878", "📦")
 
 
 # ── Roulette helpers ───────────────────────────────────────────────────────
@@ -555,14 +623,15 @@ def main_reply_kb() -> ReplyKeyboardMarkup:
                 KeyboardButton(text="👤 Профиль", icon_custom_emoji_id="5870994129244131212"),
             ],
             [
-                KeyboardButton(text="🪙 Баланс",        icon_custom_emoji_id="5904462880941545555"),
-                KeyboardButton(text="🔄 Сбросить баланс", icon_custom_emoji_id="5345906554510012647"),
+                KeyboardButton(text="🪙 Баланс",          icon_custom_emoji_id="5904462880941545555"),
+                KeyboardButton(text="🔄 Сбросить баланс",  icon_custom_emoji_id="5345906554510012647"),
             ],
             [
-                KeyboardButton(text="⛏ Ферма",    icon_custom_emoji_id="5778672437122045013"),
-                KeyboardButton(text="📊 История",  icon_custom_emoji_id="5870930636742595124"),
+                KeyboardButton(text="⛏ Ферма",   icon_custom_emoji_id="5778672437122045013"),
+                KeyboardButton(text="💼 Бизнес",  icon_custom_emoji_id="5773781976905421370"),
             ],
             [
+                KeyboardButton(text="📊 История",     icon_custom_emoji_id="5870930636742595124"),
                 KeyboardButton(text="🏆 Топ игроков", icon_custom_emoji_id="5870921681735781843"),
             ],
         ],
@@ -573,19 +642,20 @@ def main_reply_kb() -> ReplyKeyboardMarkup:
 def main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            _btn("Рулетка",       "open_roulette",    icon="5258882890059091157"),
-            _btn("Орёл или Решка","open_coin",         icon="5774585885154131652"),
+            _btn("Рулетка",        "open_roulette",    icon="5258882890059091157"),
+            _btn("Орёл или Решка", "open_coin",        icon="5774585885154131652"),
         ],
         [
-            _btn("Ракета",  "open_rocket",       icon="5373139891223741704"),
-            _btn("Сапёр",   "open_minesweeper",  icon="5373141891321699086"),
+            _btn("Ракета", "open_rocket",      icon="5373139891223741704"),
+            _btn("Сапёр",  "open_minesweeper", icon="5373141891321699086"),
         ],
         [
-            _btn("Биткоин-ферма", "open_farm", icon="5778672437122045013"),
+            _btn("Биткоин-ферма", "open_farm",     icon="5778672437122045013"),
+            _btn("Бизнес",        "open_business", icon="5773781976905421370"),
         ],
         [
-            _btn("Профиль",        "stats", icon="5870921681735781843"),
-            _btn("Сбросить баланс","reset",  icon="5345906554510012647"),
+            _btn("Профиль",         "stats", icon="5870921681735781843"),
+            _btn("Сбросить баланс", "reset", icon="5345906554510012647"),
         ],
         [
             _btn("🏆 Топ игроков", "leaderboard", icon="5870921681735781843"),
@@ -594,9 +664,9 @@ def main_menu_kb() -> InlineKeyboardMarkup:
 
 def stats_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [_btn("История ставок",  "stats_history", icon="5870930636742595124")],
-        [_btn("Накормить автора","donate",         icon="5904462880941545555")],
-        [_btn("Назад в меню",    "back_main",      icon="5893057118545646106")],
+        [_btn("История ставок",   "stats_history", icon="5870930636742595124")],
+        [_btn("Накормить автора", "donate",         icon="5904462880941545555")],
+        [_btn("Назад в меню",     "back_main",      icon="5893057118545646106")],
     ])
 
 def game_result_kb(game_type: str, balance: int = 1) -> InlineKeyboardMarkup:
@@ -642,7 +712,7 @@ def bet_amount_kb(balance: int, back: str = "back_bet_type") -> InlineKeyboardMa
             _btn(f"75% ({fmt(q3)})", f"amount_{q3}"),
         ],
         [
-            _btn(f"50% ({fmt(q2)})",   f"amount_{q2}"),
+            _btn(f"50% ({fmt(q2)})",    f"amount_{q2}"),
             _btn(f"Ва-банк ({fmt(q4)})", f"amount_{q4}", icon="6041731551845159060"),
         ],
         [_btn("Ввести вручную", "amount_custom", icon="5870676941614354370")],
@@ -671,7 +741,7 @@ def rocket_amount_kb(balance: int) -> InlineKeyboardMarkup:
             _btn(f"75% ({fmt(q3)})", f"rocket_amount_{q3}"),
         ],
         [
-            _btn(f"50% ({fmt(q2)})",   f"rocket_amount_{q2}"),
+            _btn(f"50% ({fmt(q2)})",    f"rocket_amount_{q2}"),
             _btn(f"Ва-банк ({fmt(q4)})", f"rocket_amount_{q4}", icon="6041731551845159060"),
         ],
         [_btn("Ввести вручную", "rocket_amount_custom", icon="5870676941614354370")],
@@ -691,7 +761,7 @@ def _minesweeper_mines_kb() -> InlineKeyboardMarkup:
             _btn("5 мин (x1.3)",  "ms_mines_5"),
         ],
         [
-            _btn("7 мин (x2.0)",   "ms_mines_7"),
+            _btn("7 мин (x2.0)",  "ms_mines_7"),
             _btn("10 мин (x2.8)", "ms_mines_10"),
         ],
         [_btn("Назад", "back_main", icon="5893057118545646106")],
@@ -707,8 +777,8 @@ def _minesweeper_kb(revealed: list) -> InlineKeyboardMarkup:
             )
             for c in range(5)
         ])
-    buttons.append([_btn("Забрать", "ms_cashout",  icon="5870633910337015697")])
-    buttons.append([_btn("В меню",  "back_main",   icon="5893057118545646106")])
+    buttons.append([_btn("Забрать", "ms_cashout", icon="5870633910337015697")])
+    buttons.append([_btn("В меню",  "back_main",  icon="5893057118545646106")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def admin_menu_kb() -> InlineKeyboardMarkup:
@@ -724,7 +794,7 @@ def users_list_kb(users: list, page: int = 0) -> InlineKeyboardMarkup:
     page_users = users[page * per_page : (page + 1) * per_page]
     buttons = [
         [_btn(
-            (u['username'] or ('ID ' + str(u['user_id']))) + f" ({format_chips(u['balance'])})",
+            (u["username"] or ("ID " + str(u["user_id"]))) + f' ({format_chips(u["balance"])})',
             f"admin_edit_user_{u['user_id']}",
             icon="5870994129244131212",
         )]
@@ -752,8 +822,8 @@ def donate_kb() -> InlineKeyboardMarkup:
         [_btn(f"{n} звёзд", f"donate_{n}", icon="5870982283724328568")]
         for n in (50, 100, 250, 500, 1000)
     ]
-    rows.append([_btn("Своя сумма",    "donate_custom", icon="5870676941614354370")])
-    rows.append([_btn("Назад в меню",  "back_main",     icon="5893057118545646106")])
+    rows.append([_btn("Своя сумма",   "donate_custom", icon="5870676941614354370")])
+    rows.append([_btn("Назад в меню", "back_main",     icon="5893057118545646106")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 def farm_kb(user_id: int) -> InlineKeyboardMarkup:
@@ -781,6 +851,52 @@ def farm_kb(user_id: int) -> InlineKeyboardMarkup:
     rows.append([_btn("Назад", "back_main", icon="5893057118545646106")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
+# ── Business keyboards ─────────────────────────────────────────────────────
+
+def business_list_kb(owned: dict[str, dict]) -> InlineKeyboardMarkup:
+    rows = []
+    for biz_type, info in BUSINESSES.items():
+        row_data = owned.get(biz_type)
+        if row_data:
+            pending = get_business_pending(row_data, biz_type)
+            label   = (
+                f'{info["emoji"]} {info["name"]} (+{fmt(pending)})'
+                if pending else
+                f'{info["emoji"]} {info["name"]} ✅'
+            )
+        else:
+            label = f'{info["emoji"]} {info["name"]} — {fmt(info["cost"])}'
+        rows.append([_btn(label, f"biz_info_{biz_type}")])
+
+    total_pending = sum(
+        get_business_pending(owned[bt], bt) for bt in owned if bt in BUSINESSES
+    )
+    if total_pending > 0:
+        rows.append([_btn(
+            f"Собрать всё (+{fmt(total_pending)})",
+            "biz_collect_all",
+            icon="5870633910337015697",
+        )])
+    rows.append([_btn("Назад в меню", "back_main", icon="5893057118545646106")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def business_detail_kb(biz_type: str, is_owned: bool, pending: int) -> InlineKeyboardMarkup:
+    rows = []
+    if is_owned:
+        if pending > 0:
+            rows.append([_btn(f"Собрать +{fmt(pending)}", f"biz_collect_{biz_type}", icon="5870633910337015697")])
+        else:
+            rows.append([_btn("Ещё нет дохода ⏳", "biz_noop")])
+    else:
+        cost = BUSINESSES[biz_type]["cost"]
+        rows.append([_btn(
+            f"Купить за {fmt(cost)}",
+            f"biz_buy_{biz_type}",
+            icon="5904462880941545555",
+        )])
+    rows.append([_btn("К списку бизнесов", "open_business", icon="5893057118545646106")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
 
 # ── Text builders ──────────────────────────────────────────────────────────
 
@@ -796,13 +912,13 @@ def farm_text(user_id: int) -> str:
             f'{E_CHART} Доход: <b>{format_chips(FARM_INCOME[1])} / час</b>\n\n'
             f'{E_COIN} Ваш баланс: <b>{format_chips(bal)}</b>'
         )
-    level       = farm["level"]
-    name        = FARM_LEVEL_NAMES.get(level, f"Уровень {level}")
-    last        = farm["last_collect"]
+    level = farm["level"]
+    name  = FARM_LEVEL_NAMES.get(level, f"Уровень {level}")
+    last  = farm["last_collect"]
     if last.tzinfo is None:
         last = last.replace(tzinfo=pytz.utc)
     hours = min((datetime.now(pytz.utc) - last).total_seconds() / 3600, 24)
-    text = (
+    text  = (
         f'{E_FARM} <b>Биткоин-ферма</b>\n\n'
         f'⛏ Тип: <b>{name}</b>\n'
         f'{E_CHART} Уровень: <b>{level} / 10</b>\n'
@@ -813,6 +929,41 @@ def farm_text(user_id: int) -> str:
         text += f'{E_CHART} Улучшение до ур.{level+1}: <b>{format_chips(cost)}</b>\n'
     text += f'\n{E_COIN} Ваш баланс: <b>{format_chips(bal)}</b>'
     return text
+
+def business_list_text(user_id: int, owned: dict[str, dict]) -> str:
+    bal           = get_balance(user_id)
+    owned_count   = len(owned)
+    total_income  = sum(BUSINESSES[bt]["income"] for bt in owned if bt in BUSINESSES)
+    total_pending = sum(get_business_pending(owned[bt], bt) for bt in owned if bt in BUSINESSES)
+
+    lines = [f'{E_BRIEFCASE} <b>Бизнес-империя</b>\n']
+    lines.append(f'{E_COIN} Баланс: <b>{format_chips(bal)}</b>')
+    lines.append(f'🏢 Бизнесов: <b>{owned_count} / {len(BUSINESSES)}</b>')
+    if total_income:
+        lines.append(f'{E_CHART} Суммарный доход: <b>{format_chips(total_income)} / час</b>')
+    if total_pending:
+        lines.append(f'{E_GIFT} Накоплено к сбору: <b>{format_chips(total_pending)}</b>')
+    lines.append('\n<b>Выберите бизнес:</b>')
+    return "\n".join(lines)
+
+def business_detail_text(biz_type: str, owned_row: dict | None) -> str:
+    info    = BUSINESSES[biz_type]
+    is_owned = owned_row is not None
+    pending  = get_business_pending(owned_row, biz_type) if is_owned else 0
+
+    lines = [f'{info["emoji"]} <b>{info["name"]}</b>\n']
+    lines.append(f'{E_COIN} Стоимость: <b>{format_chips(info["cost"])}</b>')
+    lines.append(f'{E_CHART} Доход: <b>{format_chips(info["income"])} / час</b>')
+    if is_owned:
+        last = owned_row["last_collect"]
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=pytz.utc)
+        hours = min((datetime.now(pytz.utc) - last).total_seconds() / 3600, 24)
+        lines.append(f'{E_CLOCK} Накоплено за {hours:.1f}ч: <b>{format_chips(pending)}</b>')
+        lines.append(f'\n{E_WIN} <b>Бизнес куплен</b>')
+    else:
+        lines.append(f'\n{E_LOSE} Ещё не куплен')
+    return "\n".join(lines)
 
 def profile_text(user: dict) -> str:
     wins, losses = user["wins"], user["losses"]
@@ -831,16 +982,17 @@ def history_text(user_id: int) -> str:
     history = get_history(user_id, limit=15)
     game_names = {
         "coin": "Монета", "rocket": "Ракета",
-        "minesweeper": "Сапёр", "admin_topup": "Пополнение", "farm": "Ферма",
+        "minesweeper": "Сапёр", "admin_topup": "Пополнение",
+        "farm": "Ферма", "business": "Бизнес",
     }
     if not history:
         return f'{E_HISTORY} <b>Нет истории ставок</b>'
 
-    lines = [f'{E_HISTORY} <b>История ставок (последние 15):</b>\n']
+    lines = [f'{E_HISTORY} <b>История (последние 15):</b>\n']
     for e in history:
         em   = E_WIN if e["is_win"] else E_LOSE
         sign = "+" if e["is_win"] else "-"
-        lines.append(f'{em} {sign}{e["amount"]} — {game_names.get(e["game_type"], "Рулетка")}')
+        lines.append(f'{em} {sign}{fmt(e["amount"])} — {game_names.get(e["game_type"], "Рулетка")}')
 
     stats = get_user_history_stats(user_id)
     if stats and (stats["win_count"] or stats["lose_count"]):
@@ -848,18 +1000,18 @@ def history_text(user_id: int) -> str:
         lost = stats["total_lost"] or 0
         net  = won - lost
         lines.append("")
-        lines.append(f'{E_WIN} Выигрыши: <b>+{won}</b>')
-        lines.append(f'{E_LOSE} Проигрыши: <b>-{lost}</b>')
-        sign = "+" if net > 0 else ""
+        lines.append(f'{E_WIN} Выигрыши: <b>+{fmt(won)}</b>')
+        lines.append(f'{E_LOSE} Проигрыши: <b>-{fmt(lost)}</b>')
+        sign  = "+" if net > 0 else ""
         emoji = E_WIN if net > 0 else (E_LOSE if net < 0 else E_COIN)
-        lines.append(f'{emoji} Итог: <b>{sign}{net}</b>')
+        lines.append(f'{emoji} Итог: <b>{sign}{fmt(net)}</b>')
     return "\n".join(lines)
 
 def leaderboard_text() -> str:
     top = get_leaderboard(10)
     if not top:
         return f'{E_CHART2} <b>Топ пуст</b>'
-    medals = ["🥇", "🥈", "🥉"] + ["4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
+    medals = ["🥇","🥈","🥉","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
     lines  = [f'{E_CHART2} <b>Топ-10 игроков</b>\n']
     for i, u in enumerate(top):
         name = html.escape(u["username"] or "Неизвестно")
@@ -883,7 +1035,7 @@ def _minesweeper_text(amount: int, field: list, revealed: list, mines: int) -> s
     opened_count = sum(sum(row) for row in revealed)
     multiplier   = base_mult * (1.0 + opened_count * 0.05)
     potential    = int(amount * multiplier)
-    lines        = [
+    lines = [
         f'{E_BOMB} <b>Сапёр</b>\n',
         f'{E_COIN} Ставка: <b>{format_chips(amount)}</b>',
         f'{E_BOMB} Мин: <b>{mines}</b>',
@@ -945,11 +1097,11 @@ async def cmd_start(msg: Message, state: FSMContext):
     text = (
         f'{E_CASINO} <b>Добро пожаловать в Казино!</b>\n\n'
         f'{E_COIN} Ваш баланс: <b>{format_chips(bal)}</b>\n\n'
-        f'{E_FARM} Доступные игры:'
+        f'Используйте меню ниже для навигации.'
     )
     await msg.answer(text, parse_mode="HTML", reply_markup=main_reply_kb())
     await msg.answer(
-        f'{E_FARM} <b>Выберите игру:</b>',
+        f'{E_CASINO} <b>Выберите игру:</b>',
         parse_mode="HTML",
         reply_markup=main_menu_kb(),
     )
@@ -966,8 +1118,9 @@ async def cmd_help(msg: Message):
         f'{E_CASINO} <b>Рулетка</b> — классическая европейская рулетка\n'
         f'{E_ROCKET} <b>Ракета</b> — останови в нужный момент\n'
         f'{E_BOMB} <b>Сапёр</b> — открывай клетки без мин\n'
-        '🪙 <b>Монета</b> — орёл или решка (x2)\n\n'
-        f'{E_FARM} <b>Ферма</b> — пассивный доход каждый час\n\n'
+        f'{E_COIN} <b>Монета</b> — орёл или решка (x2)\n\n'
+        f'{E_FARM} <b>Ферма</b> — пассивный доход каждый час\n'
+        f'{E_BRIEFCASE} <b>Бизнес</b> — купи бизнес и получай прибыль\n\n'
         f'{E_GIFT} Каждый день в <b>12:00 МСК</b> начисляется бонус +10 000 фишек!'
     )
     await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
@@ -1024,6 +1177,16 @@ async def reply_reset(msg: Message, state: FSMContext):
 async def reply_farm(msg: Message):
     uid = msg.from_user.id
     await msg.answer(farm_text(uid), parse_mode="HTML", reply_markup=farm_kb(uid))
+
+@dp.message(F.text == "💼 Бизнес")
+async def reply_business(msg: Message):
+    uid   = msg.from_user.id
+    owned = get_user_businesses(uid)
+    await msg.answer(
+        business_list_text(uid, owned),
+        parse_mode="HTML",
+        reply_markup=business_list_kb(owned),
+    )
 
 @dp.message(F.text == "📊 История")
 async def reply_history(msg: Message):
@@ -1237,6 +1400,128 @@ async def farm_upgrade_handler(cq: CallbackQuery):
     await safe_edit_or_send(cq, farm_text(uid), reply_markup=farm_kb(uid))
 
 
+# ── Business callbacks ─────────────────────────────────────────────────────
+
+@dp.callback_query(F.data == "open_business")
+async def open_business(cq: CallbackQuery):
+    uid   = cq.from_user.id
+    owned = get_user_businesses(uid)
+    await safe_edit_or_send(
+        cq,
+        business_list_text(uid, owned),
+        reply_markup=business_list_kb(owned),
+    )
+    await cq.answer()
+
+@dp.callback_query(F.data.regexp(r"^biz_info_\w+$"))
+async def biz_info(cq: CallbackQuery):
+    biz_type = cq.data[len("biz_info_"):]
+    if biz_type not in BUSINESSES:
+        await cq.answer("Неизвестный бизнес.", show_alert=True)
+        return
+    owned     = get_user_businesses(cq.from_user.id)
+    owned_row = owned.get(biz_type)
+    pending   = get_business_pending(owned_row, biz_type) if owned_row else 0
+    await safe_edit_or_send(
+        cq,
+        business_detail_text(biz_type, owned_row),
+        reply_markup=business_detail_kb(biz_type, owned_row is not None, pending),
+    )
+    await cq.answer()
+
+@dp.callback_query(F.data.regexp(r"^biz_buy_\w+$"))
+async def biz_buy(cq: CallbackQuery):
+    biz_type = cq.data[len("biz_buy_"):]
+    if biz_type not in BUSINESSES:
+        await cq.answer("Неизвестный бизнес.", show_alert=True)
+        return
+    uid  = cq.from_user.id
+    info = BUSINESSES[biz_type]
+
+    if get_user_businesses(uid).get(biz_type):
+        await cq.answer("Этот бизнес уже куплен!", show_alert=True)
+        return
+
+    new_bal = atomic_update_balance(uid, -info["cost"])
+    if new_bal is None:
+        await cq.answer(
+            f'Недостаточно фишек! Нужно {format_chips(info["cost"])}',
+            show_alert=True,
+        )
+        return
+
+    buy_business(uid, biz_type)
+    await cq.answer(f'{info["emoji"]} {info["name"]} куплен!', show_alert=True)
+
+    owned_row = get_user_businesses(uid).get(biz_type)
+    await safe_edit_or_send(
+        cq,
+        business_detail_text(biz_type, owned_row),
+        reply_markup=business_detail_kb(biz_type, True, 0),
+    )
+
+@dp.callback_query(F.data.regexp(r"^biz_collect_\w+$"))
+async def biz_collect(cq: CallbackQuery):
+    biz_type = cq.data[len("biz_collect_"):]
+    if biz_type not in BUSINESSES:
+        await cq.answer("Неизвестный бизнес.", show_alert=True)
+        return
+    uid   = cq.from_user.id
+    owned = get_user_businesses(uid)
+    row   = owned.get(biz_type)
+    if not row:
+        await cq.answer("Этот бизнес не куплен.", show_alert=True)
+        return
+
+    pending = get_business_pending(row, biz_type)
+    if pending <= 0:
+        await cq.answer("Ещё нечего собирать!", show_alert=True)
+        return
+
+    atomic_update_balance(uid, pending)
+    collect_business(uid, biz_type)
+    add_history(uid, pending, True, game_type="business")
+    await cq.answer(f'Собрано +{fmt(pending)} фишек! ✅', show_alert=True)
+
+    owned_row = get_user_businesses(uid).get(biz_type)
+    await safe_edit_or_send(
+        cq,
+        business_detail_text(biz_type, owned_row),
+        reply_markup=business_detail_kb(biz_type, True, 0),
+    )
+
+@dp.callback_query(F.data == "biz_collect_all")
+async def biz_collect_all(cq: CallbackQuery):
+    uid   = cq.from_user.id
+    owned = get_user_businesses(uid)
+    total = 0
+    for biz_type, row in owned.items():
+        if biz_type not in BUSINESSES:
+            continue
+        pending = get_business_pending(row, biz_type)
+        if pending > 0:
+            atomic_update_balance(uid, pending)
+            collect_business(uid, biz_type)
+            add_history(uid, pending, True, game_type="business")
+            total += pending
+
+    if total == 0:
+        await cq.answer("Нечего собирать!", show_alert=True)
+        return
+
+    await cq.answer(f'Собрано +{fmt(total)} фишек! ✅', show_alert=True)
+    owned = get_user_businesses(uid)
+    await safe_edit_or_send(
+        cq,
+        business_list_text(uid, owned),
+        reply_markup=business_list_kb(owned),
+    )
+
+@dp.callback_query(F.data == "biz_noop")
+async def biz_noop(cq: CallbackQuery):
+    await cq.answer("Подождите, доход накапливается!", show_alert=True)
+
+
 # ── Roulette ───────────────────────────────────────────────────────────────
 
 @dp.callback_query(F.data == "open_roulette")
@@ -1289,7 +1574,7 @@ def _roulette_result_text(bet_type: str, amount: int, result: int, won: bool, mu
     color = number_color(result)
     label = BET_LABELS.get(bet_type, bet_type.replace("num_", "число "))
     if won:
-        profit = amount * mult
+        profit  = amount * mult
         outcome = f'{E_PARTY} <b>ПОБЕДА!</b>\n{E_COIN2} +{format_chips(profit)} (x{mult})'
     else:
         outcome = f'{E_LOSE} <b>Поражение.</b>\n{E_COIN} -{format_chips(amount)}'
@@ -1307,7 +1592,6 @@ def _roulette_result_text(bet_type: str, amount: int, result: int, won: bool, mu
 async def handle_roulette_text_input(msg: Message, state: FSMContext):
     data = await state.get_data()
 
-    # Ввод конкретного числа
     if data.get("bet_type") == "pending_number":
         try:
             n = int(msg.text.strip())
@@ -1324,7 +1608,6 @@ async def handle_roulette_text_input(msg: Message, state: FSMContext):
         )
         return
 
-    # Ввод произвольной суммы
     if data.get("waiting_custom"):
         bal = get_balance(msg.from_user.id)
         try:
@@ -1497,7 +1780,7 @@ async def handle_coin_amount_input(msg: Message, state: FSMContext):
     data = await state.get_data()
     if not data.get("waiting_custom"):
         return
-    bal  = get_balance(msg.from_user.id)
+    bal = get_balance(msg.from_user.id)
     try:
         amount = int(msg.text.strip())
         assert 1 <= amount <= bal
@@ -1667,7 +1950,6 @@ async def rocket_cashout(cq: CallbackQuery, state: FSMContext):
     payout     = int(amount * multiplier)
     net_profit = payout - amount
 
-    # Если множитель x1.0 — фиксируем как 0 прибыли, но это всё равно победа (не потерял)
     if net_profit == 0:
         new_bal = get_balance(cq.from_user.id)
     else:
@@ -1760,9 +2042,9 @@ async def ms_custom_amount(msg: Message, state: FSMContext):
 
 @dp.callback_query(MinesweeperState.choosing_mines, F.data.regexp(r"^ms_mines_\d+$"))
 async def ms_start_game(cq: CallbackQuery, state: FSMContext):
-    mines  = int(cq.data.split("_")[-1])
-    data   = await state.get_data()
-    amount = data["minesweeper_amount"]
+    mines    = int(cq.data.split("_")[-1])
+    data     = await state.get_data()
+    amount   = data["minesweeper_amount"]
     field    = generate_minesweeper_field(size=5, mines=mines)
     revealed = [[False] * 5 for _ in range(5)]
     await state.set_state(MinesweeperState.in_game)
@@ -1792,7 +2074,7 @@ async def ms_open_cell(cq: CallbackQuery, state: FSMContext):
 
     revealed[row][col] = True
 
-    if field[row][col]:  # МИНА
+    if field[row][col]:
         new_bal = update_balance(uid, -amount, win=False, game_type="minesweeper")
         if new_bal is None:
             new_bal = get_balance(uid)
@@ -2007,9 +2289,8 @@ async def broadcast_menu(cq: CallbackQuery, state: FSMContext):
 async def process_broadcast(msg: Message, state: FSMContext):
     if msg.from_user.id != ADMIN_ID:
         return
-    # Экранируем только если текст не содержит намеренных HTML-тегов
     broadcast_text = msg.text or ""
-    users   = get_all_users_full()
+    users = get_all_users_full()
     ok = fail = 0
     for u in users:
         try:
@@ -2073,20 +2354,41 @@ async def daily_bonus_task():
         if now >= target:
             target += timedelta(days=1)
         await asyncio.sleep((target - now).total_seconds())
+
         for uid in get_all_users():
             add_daily_bonus(uid)
             new_bal = get_balance(uid)
-            try:
-                await bot.send_message(
-                    uid,
-                    f'{E_GIFT} <b>Ежедневный бонус!</b>\n\n'
-                    f'{E_COIN2} Начислено <b>+10 000 фишек</b>\n'
-                    f'{E_COIN} Текущий баланс: <b>{format_chips(new_bal)}</b>\n\n'
-                    f'<i>Удачной игры!</i>',
-                    parse_mode="HTML",
+
+            bonus_msg = (
+                f'{E_GIFT} <b>Ежедневный бонус!</b>\n\n'
+                f'{E_COIN2} Начислено <b>+10 000 фишек</b>\n'
+                f'{E_COIN} Текущий баланс: <b>{format_chips(new_bal)}</b>\n'
+            )
+
+            # Напомнить о накопленном доходе бизнесов
+            biz_owned = get_user_businesses(uid)
+            if biz_owned:
+                biz_pending = sum(
+                    get_business_pending(biz_owned[bt], bt)
+                    for bt in biz_owned if bt in BUSINESSES
                 )
+                if biz_pending:
+                    bonus_msg += f'{E_BRIEFCASE} Бизнесы накопили: <b>{format_chips(biz_pending)}</b>\n'
+
+            # Напомнить о накопленном доходе фермы
+            farm = get_farm(uid)
+            if farm:
+                farm_pending = get_farm_pending(farm)
+                if farm_pending:
+                    bonus_msg += f'{E_FARM} Ферма накопила: <b>{format_chips(farm_pending)}</b>\n'
+
+            bonus_msg += '\n<i>Удачной игры!</i>'
+
+            try:
+                await bot.send_message(uid, bonus_msg, parse_mode="HTML")
             except Exception:
                 pass
+
         await asyncio.sleep(60)
 
 
