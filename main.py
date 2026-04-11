@@ -947,7 +947,7 @@ def business_list_text(user_id: int, owned: dict[str, dict]) -> str:
     return "\n".join(lines)
 
 def business_detail_text(biz_type: str, owned_row: dict | None) -> str:
-    info    = BUSINESSES[biz_type]
+    info     = BUSINESSES[biz_type]
     is_owned = owned_row is not None
     pending  = get_business_pending(owned_row, biz_type) if is_owned else 0
 
@@ -1460,7 +1460,36 @@ async def biz_buy(cq: CallbackQuery):
         reply_markup=business_detail_kb(biz_type, True, 0),
     )
 
-@dp.callback_query(F.data.regexp(r"^biz_collect_\w+$"))
+# ── ИСПРАВЛЕНИЕ: biz_collect_all ДОЛЖЕН быть ВЫШЕ biz_collect ──────────────
+
+@dp.callback_query(F.data == "biz_collect_all")
+async def biz_collect_all(cq: CallbackQuery):
+    uid   = cq.from_user.id
+    owned = get_user_businesses(uid)
+    total = 0
+    for biz_type, row in owned.items():
+        if biz_type not in BUSINESSES:
+            continue
+        pending = get_business_pending(row, biz_type)
+        if pending > 0:
+            atomic_update_balance(uid, pending)
+            collect_business(uid, biz_type)
+            add_history(uid, pending, True, game_type="business")
+            total += pending
+
+    if total == 0:
+        await cq.answer("Нечего собирать!", show_alert=True)
+        return
+
+    await cq.answer(f'Собрано +{fmt(total)} фишек! ✅', show_alert=True)
+    owned = get_user_businesses(uid)
+    await safe_edit_or_send(
+        cq,
+        business_list_text(uid, owned),
+        reply_markup=business_list_kb(owned),
+    )
+
+@dp.callback_query(F.data.regexp(r"^biz_collect_(?!all)\w+$"))
 async def biz_collect(cq: CallbackQuery):
     biz_type = cq.data[len("biz_collect_"):]
     if biz_type not in BUSINESSES:
@@ -1488,33 +1517,6 @@ async def biz_collect(cq: CallbackQuery):
         cq,
         business_detail_text(biz_type, owned_row),
         reply_markup=business_detail_kb(biz_type, True, 0),
-    )
-
-@dp.callback_query(F.data == "biz_collect_all")
-async def biz_collect_all(cq: CallbackQuery):
-    uid   = cq.from_user.id
-    owned = get_user_businesses(uid)
-    total = 0
-    for biz_type, row in owned.items():
-        if biz_type not in BUSINESSES:
-            continue
-        pending = get_business_pending(row, biz_type)
-        if pending > 0:
-            atomic_update_balance(uid, pending)
-            collect_business(uid, biz_type)
-            add_history(uid, pending, True, game_type="business")
-            total += pending
-
-    if total == 0:
-        await cq.answer("Нечего собирать!", show_alert=True)
-        return
-
-    await cq.answer(f'Собрано +{fmt(total)} фишек! ✅', show_alert=True)
-    owned = get_user_businesses(uid)
-    await safe_edit_or_send(
-        cq,
-        business_list_text(uid, owned),
-        reply_markup=business_list_kb(owned),
     )
 
 @dp.callback_query(F.data == "biz_noop")
@@ -2365,7 +2367,6 @@ async def daily_bonus_task():
                 f'{E_COIN} Текущий баланс: <b>{format_chips(new_bal)}</b>\n'
             )
 
-            # Напомнить о накопленном доходе бизнесов
             biz_owned = get_user_businesses(uid)
             if biz_owned:
                 biz_pending = sum(
@@ -2375,7 +2376,6 @@ async def daily_bonus_task():
                 if biz_pending:
                     bonus_msg += f'{E_BRIEFCASE} Бизнесы накопили: <b>{format_chips(biz_pending)}</b>\n'
 
-            # Напомнить о накопленном доходе фермы
             farm = get_farm(uid)
             if farm:
                 farm_pending = get_farm_pending(farm)
