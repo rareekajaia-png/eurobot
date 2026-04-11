@@ -1,8 +1,10 @@
 import asyncio
+import html
 import random
 import os
 import time
 from datetime import datetime, timedelta
+
 import pytz
 from dotenv import load_dotenv
 from psycopg2.extras import RealDictCursor
@@ -10,7 +12,7 @@ from psycopg2 import pool
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-    LabeledPrice, PreCheckoutQuery, ReplyKeyboardMarkup, KeyboardButton
+    LabeledPrice, PreCheckoutQuery, ReplyKeyboardMarkup, KeyboardButton,
 )
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
@@ -18,83 +20,43 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 load_dotenv()
-TOKEN = os.getenv("BOT_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
-STARTING_BALANCE = 1000
+TOKEN          = os.getenv("BOT_TOKEN")
+DATABASE_URL   = os.getenv("DATABASE_URL")
+ADMIN_ID       = int(os.getenv("ADMIN_ID", "0"))
+STARTING_BALANCE = 1_000
 
 bot = Bot(token=TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
+dp  = Dispatcher(storage=MemoryStorage())
 
-db_pool = None
+db_pool: pool.SimpleConnectionPool | None = None
 
-def get_db_pool():
+# ── Cooldown protection ────────────────────────────────────────────────────
+_COOLDOWNS: dict[int, float] = {}
+
+def check_cooldown(user_id: int, seconds: float = 1.0) -> bool:
+    now = time.monotonic()
+    if now - _COOLDOWNS.get(user_id, 0.0) < seconds:
+        return False
+    _COOLDOWNS[user_id] = now
+    return True
+
+
+# ── DB pool ────────────────────────────────────────────────────────────────
+
+def get_db_pool() -> pool.SimpleConnectionPool:
     global db_pool
     if db_pool is None:
         db_pool = pool.SimpleConnectionPool(1, 10, DATABASE_URL)
     return db_pool
-
-last_bets = {}
-last_messages = {}
-
-
-# ── Reply-клавиатура (нижняя панель) ─────────────────────────────────────────
-
-def main_reply_kb() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [
-                KeyboardButton(
-                    text="🎰 Казино",
-                    icon_custom_emoji_id="5258882890059091157"
-                ),
-                KeyboardButton(
-                    text="👤 Профиль",
-                    icon_custom_emoji_id="5870994129244131212"
-                ),
-            ],
-            [
-                KeyboardButton(
-                    text="🪙 Баланс",
-                    icon_custom_emoji_id="5904462880941545555"
-                ),
-                KeyboardButton(
-                    text="🔄 Сбросить баланс",
-                    icon_custom_emoji_id="5345906554510012647"
-                ),
-            ],
-            [
-                KeyboardButton(
-                    text="⛏ Ферма",
-                    icon_custom_emoji_id="5904462880941545555"
-                ),
-                KeyboardButton(
-                    text="📊 История",
-                    icon_custom_emoji_id="5870930636742595124"
-                ),
-            ],
-        ],
-        resize_keyboard=True,
-        is_persistent=True,
-    )
-
-
-async def safe_edit_or_send(cq: CallbackQuery, text: str, reply_markup=None):
-    """Пробует edit_text, при ошибке отправляет новое сообщение."""
-    try:
-        await cq.message.edit_text(text, parse_mode="HTML", reply_markup=reply_markup)
-    except Exception:
-        try:
-            await cq.message.delete()
-        except:
-            pass
-        await cq.message.answer(text, parse_mode="HTML", reply_markup=reply_markup)
-
 
 def db_connect():
     return get_db_pool().getconn()
 
 def db_release(conn):
     get_db_pool().putconn(conn)
+
+
+# ── DB init ────────────────────────────────────────────────────────────────
 
 def init_db():
     conn = db_connect()
@@ -104,119 +66,174 @@ def init_db():
                 CREATE TABLE IF NOT EXISTS users (
                     user_id         BIGINT PRIMARY KEY,
                     username        TEXT,
-                    balance         INTEGER DEFAULT 1000,
+                    balance         BIGINT  DEFAULT 1000,
                     wins            INTEGER DEFAULT 0,
                     losses          INTEGER DEFAULT 0,
                     last_message_id INTEGER
                 )
             """)
-        conn.commit()
-    except:
-        conn.rollback()
-    finally:
-        db_release(conn)
-
-    conn = db_connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_message_id INTEGER")
-        conn.commit()
-    except:
-        conn.rollback()
-    finally:
-        db_release(conn)
-
-    conn = db_connect()
-    try:
-        with conn.cursor() as cur:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS history (
-                    id         SERIAL PRIMARY KEY,
-                    user_id    BIGINT NOT NULL,
-                    amount     INTEGER NOT NULL,
+                    id         SERIAL  PRIMARY KEY,
+                    user_id    BIGINT  NOT NULL,
+                    amount     BIGINT  NOT NULL,
                     is_win     BOOLEAN NOT NULL,
-                    game_type  TEXT DEFAULT 'roulette',
+                    game_type  TEXT    DEFAULT 'roulette',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users(user_id)
                 )
             """)
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_history_user_id ON history(user_id)")
-        conn.commit()
-    except:
-        conn.rollback()
-    finally:
-        db_release(conn)
-
-    conn = db_connect()
-    try:
-        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_history_user_id ON history(user_id)"
+            )
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS farms (
                     user_id      BIGINT PRIMARY KEY,
-                    level        INTEGER DEFAULT 1,
+                    level        INTEGER   DEFAULT 1,
                     last_collect TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users(user_id)
                 )
             """)
         conn.commit()
-    except:
+    except Exception:
         conn.rollback()
+        raise
     finally:
         db_release(conn)
 
 
-# ── DB helpers ──────────────────────────────────────────────────────────────
+# ── DB helpers ─────────────────────────────────────────────────────────────
 
-def get_user(user_id: int):
+def get_user(user_id: int) -> dict | None:
     conn = db_connect()
     try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM users WHERE user_id=%s", (user_id,))
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
             return cur.fetchone()
     finally:
         db_release(conn)
 
-def get_or_create_user(user_id: int, username: str):
+def get_or_create_user(user_id: int, username: str) -> int:
     conn = db_connect()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """INSERT INTO users (user_id, username, balance) VALUES (%s,%s,%s)
+                """INSERT INTO users (user_id, username, balance)
+                   VALUES (%s, %s, %s)
                    ON CONFLICT (user_id) DO UPDATE SET username = EXCLUDED.username
                    RETURNING balance""",
-                (user_id, username, STARTING_BALANCE)
+                (user_id, username, STARTING_BALANCE),
             )
-            result = cur.fetchone()
+            row = cur.fetchone()
             conn.commit()
-            return result[0] if result else STARTING_BALANCE
+            return row[0] if row else STARTING_BALANCE
     finally:
         db_release(conn)
-
-def update_balance(user_id: int, delta: int, win: bool, game_type: str = "roulette"):
-    col = "wins" if win else "losses"
-    conn = db_connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"UPDATE users SET balance = balance + %s, {col} = {col} + 1 WHERE user_id=%s",
-                (delta, user_id)
-            )
-        conn.commit()
-    finally:
-        db_release(conn)
-    add_history(user_id, abs(delta), win, game_type)
 
 def get_balance(user_id: int) -> int:
     conn = db_connect()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT balance FROM users WHERE user_id=%s", (user_id,))
+            cur.execute("SELECT balance FROM users WHERE user_id = %s", (user_id,))
             row = cur.fetchone()
-        return row[0] if row else 0
+            return row[0] if row else 0
     finally:
         db_release(conn)
 
-def get_all_users():
+def atomic_update_balance(user_id: int, delta: int) -> int | None:
+    """
+    Атомарно меняет баланс.
+    При delta < 0 проверяет, что баланс достаточен.
+    Возвращает новый баланс или None если средств недостаточно.
+    """
+    conn = db_connect()
+    try:
+        with conn.cursor() as cur:
+            if delta < 0:
+                cur.execute(
+                    """UPDATE users
+                       SET balance = balance + %s
+                       WHERE user_id = %s AND balance >= %s
+                       RETURNING balance""",
+                    (delta, user_id, -delta),
+                )
+            else:
+                cur.execute(
+                    """UPDATE users
+                       SET balance = balance + %s
+                       WHERE user_id = %s
+                       RETURNING balance""",
+                    (delta, user_id),
+                )
+            row = cur.fetchone()
+            conn.commit()
+            return row[0] if row else None
+    except Exception:
+        conn.rollback()
+        return None
+    finally:
+        db_release(conn)
+
+def update_balance(user_id: int, delta: int, win: bool, game_type: str = "roulette") -> int | None:
+    col  = "wins" if win else "losses"
+    conn = db_connect()
+    try:
+        with conn.cursor() as cur:
+            if delta < 0:
+                cur.execute(
+                    f"""UPDATE users
+                        SET balance = balance + %s,
+                            {col} = {col} + 1
+                        WHERE user_id = %s AND balance >= %s
+                        RETURNING balance""",
+                    (delta, user_id, -delta),
+                )
+            else:
+                cur.execute(
+                    f"""UPDATE users
+                        SET balance = balance + %s,
+                            {col} = {col} + 1
+                        WHERE user_id = %s
+                        RETURNING balance""",
+                    (delta, user_id),
+                )
+            row = cur.fetchone()
+            conn.commit()
+    except Exception:
+        conn.rollback()
+        return None
+    finally:
+        db_release(conn)
+
+    if row:
+        add_history(user_id, abs(delta), win, game_type)
+        return row[0]
+    return None
+
+def reset_balance(user_id: int):
+    conn = db_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET balance = %s WHERE user_id = %s",
+                (STARTING_BALANCE, user_id),
+            )
+        conn.commit()
+    finally:
+        db_release(conn)
+
+def set_balance(user_id: int, amount: int):
+    conn = db_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET balance = %s WHERE user_id = %s", (amount, user_id)
+            )
+        conn.commit()
+    finally:
+        db_release(conn)
+
+def get_all_users() -> list[int]:
     conn = db_connect()
     try:
         with conn.cursor() as cur:
@@ -225,25 +242,7 @@ def get_all_users():
     finally:
         db_release(conn)
 
-def add_daily_bonus(user_id: int):
-    conn = db_connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE users SET balance = balance + 10000 WHERE user_id=%s", (user_id,))
-        conn.commit()
-    finally:
-        db_release(conn)
-
-def reset_balance(user_id: int):
-    conn = db_connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE users SET balance = %s WHERE user_id=%s", (STARTING_BALANCE, user_id))
-        conn.commit()
-    finally:
-        db_release(conn)
-
-def get_all_users_full():
+def get_all_users_full() -> list[dict]:
     conn = db_connect()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -252,11 +251,25 @@ def get_all_users_full():
     finally:
         db_release(conn)
 
-def set_balance(user_id: int, amount: int):
+def get_leaderboard(limit: int = 10) -> list[dict]:
+    conn = db_connect()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT username, balance, wins, losses FROM users ORDER BY balance DESC LIMIT %s",
+                (limit,),
+            )
+            return cur.fetchall()
+    finally:
+        db_release(conn)
+
+def add_daily_bonus(user_id: int):
     conn = db_connect()
     try:
         with conn.cursor() as cur:
-            cur.execute("UPDATE users SET balance = %s WHERE user_id=%s", (amount, user_id))
+            cur.execute(
+                "UPDATE users SET balance = balance + 10000 WHERE user_id = %s", (user_id,)
+            )
         conn.commit()
     finally:
         db_release(conn)
@@ -267,37 +280,39 @@ def add_history(user_id: int, amount: int, is_win: bool, game_type: str = "roule
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO history (user_id, amount, is_win, game_type) VALUES (%s, %s, %s, %s)",
-                (user_id, amount, is_win, game_type)
+                (user_id, amount, is_win, game_type),
             )
         conn.commit()
     finally:
         db_release(conn)
 
-def get_history(user_id: int, limit: int = 10):
+def get_history(user_id: int, limit: int = 10) -> list[dict]:
     conn = db_connect()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
-                """SELECT amount, is_win, game_type, created_at FROM history
-                   WHERE user_id=%s ORDER BY created_at DESC LIMIT %s""",
-                (user_id, limit)
+                """SELECT amount, is_win, game_type, created_at
+                   FROM history WHERE user_id = %s
+                   ORDER BY created_at DESC LIMIT %s""",
+                (user_id, limit),
             )
             return cur.fetchall()
     finally:
         db_release(conn)
 
-def get_user_history_stats(user_id: int):
+def get_user_history_stats(user_id: int) -> dict | None:
     conn = db_connect()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """SELECT
-                   SUM(CASE WHEN is_win THEN amount ELSE 0 END) as total_won,
-                   SUM(CASE WHEN NOT is_win THEN amount ELSE 0 END) as total_lost,
-                   COUNT(CASE WHEN is_win THEN 1 END) as win_count,
-                   COUNT(CASE WHEN NOT is_win THEN 1 END) as lose_count
-                   FROM history WHERE user_id=%s AND game_type != 'admin_topup'""",
-                (user_id,)
+                   SUM(CASE WHEN is_win     THEN amount ELSE 0 END) AS total_won,
+                   SUM(CASE WHEN NOT is_win THEN amount ELSE 0 END) AS total_lost,
+                   COUNT(CASE WHEN is_win     THEN 1 END) AS win_count,
+                   COUNT(CASE WHEN NOT is_win THEN 1 END) AS lose_count
+                   FROM history
+                   WHERE user_id = %s AND game_type != 'admin_topup'""",
+                (user_id,),
             )
             return cur.fetchone()
     finally:
@@ -313,28 +328,28 @@ def clear_all_history():
         db_release(conn)
 
 
-# ── Farm DB ──────────────────────────────────────────────────────────────────
+# ── Farm DB ────────────────────────────────────────────────────────────────
 
-FARM_BUY_COST = 5000
+FARM_BUY_COST      = 5_000
 FARM_UPGRADE_COSTS = {
-    1: 3000, 2: 8000, 3: 20000, 4: 50000,
-    5: 120000, 6: 300000, 7: 700000, 8: 1500000, 9: 3000000
+    1: 3_000,  2: 8_000,   3: 20_000,  4: 50_000,
+    5: 120_000, 6: 300_000, 7: 700_000, 8: 1_500_000, 9: 3_000_000,
 }
 FARM_INCOME = {
-    1: 200, 2: 500, 3: 1200, 4: 3000, 5: 7000,
-    6: 15000, 7: 35000, 8: 80000, 9: 180000, 10: 400000
+    1: 200,  2: 500,   3: 1_200,  4: 3_000,  5: 7_000,
+    6: 15_000, 7: 35_000, 8: 80_000, 9: 180_000, 10: 400_000,
 }
 FARM_LEVEL_NAMES = {
-    1: "Малинка", 2: "Ноутбук", 3: "Десктоп", 4: "Стойка",
+    1: "Малинка",  2: "Ноутбук",  3: "Десктоп",  4: "Стойка",
     5: "Мини-ферма", 6: "Ферма", 7: "Датацентр", 8: "Мега-ферма",
-    9: "Гиперцентр", 10: "Квантовая ферма"
+    9: "Гиперцентр", 10: "Квантовая ферма",
 }
 
-def get_farm(user_id: int):
+def get_farm(user_id: int) -> dict | None:
     conn = db_connect()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT * FROM farms WHERE user_id=%s", (user_id,))
+            cur.execute("SELECT * FROM farms WHERE user_id = %s", (user_id,))
             return cur.fetchone()
     finally:
         db_release(conn)
@@ -344,8 +359,9 @@ def buy_farm(user_id: int):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO farms (user_id, level, last_collect) VALUES (%s, 1, CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING",
-                (user_id,)
+                "INSERT INTO farms (user_id, level, last_collect) "
+                "VALUES (%s, 1, CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING",
+                (user_id,),
             )
         conn.commit()
     finally:
@@ -355,7 +371,7 @@ def upgrade_farm(user_id: int):
     conn = db_connect()
     try:
         with conn.cursor() as cur:
-            cur.execute("UPDATE farms SET level = level + 1 WHERE user_id=%s", (user_id,))
+            cur.execute("UPDATE farms SET level = level + 1 WHERE user_id = %s", (user_id,))
         conn.commit()
     finally:
         db_release(conn)
@@ -365,27 +381,24 @@ def collect_farm(user_id: int):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE farms SET last_collect = CURRENT_TIMESTAMP WHERE user_id=%s",
-                (user_id,)
+                "UPDATE farms SET last_collect = CURRENT_TIMESTAMP WHERE user_id = %s",
+                (user_id,),
             )
         conn.commit()
     finally:
         db_release(conn)
 
-def get_farm_pending(farm) -> int:
+def get_farm_pending(farm: dict) -> int:
     if not farm:
         return 0
-    last = farm['last_collect']
+    last = farm["last_collect"]
     if last.tzinfo is None:
         last = last.replace(tzinfo=pytz.utc)
-    now = datetime.now(pytz.utc)
-    hours = (now - last).total_seconds() / 3600
-    hours = min(hours, 24)
-    income_per_hour = FARM_INCOME.get(farm['level'], 0)
-    return int(hours * income_per_hour)
+    hours = min((datetime.now(pytz.utc) - last).total_seconds() / 3600, 24)
+    return int(hours * FARM_INCOME.get(farm["level"], 0))
 
 
-# ── States ───────────────────────────────────────────────────────────────────
+# ── States ─────────────────────────────────────────────────────────────────
 
 class BetState(StatesGroup):
     choosing_bet_type = State()
@@ -414,61 +427,85 @@ class MinesweeperState(StatesGroup):
     in_game         = State()
 
 
-# ── Roulette helpers ──────────────────────────────────────────────────────────
+# ── Formatting helpers ─────────────────────────────────────────────────────
+
+def noun_form(count: int, singular: str, gen24: str, gen5: str) -> str:
+    n = int(count) % 100
+    if n % 10 == 1 and n != 11:
+        return singular
+    if n % 10 in (2, 3, 4) and n not in (12, 13, 14):
+        return gen24
+    return gen5
+
+def fmt(n: int) -> str:
+    if n >= 1_000_000:
+        v = n / 1_000_000
+        return (f"{int(v)}кк" if v == int(v) else f"{v:.1f}".rstrip("0").rstrip(".") + "кк")
+    if n >= 1_000:
+        v = n / 1_000
+        return (f"{int(v)}к" if v == int(v) else f"{v:.1f}".rstrip("0").rstrip(".") + "к")
+    return str(n)
+
+def format_chips(amount: int) -> str:
+    if amount >= 1_000_000:
+        return fmt(amount) + " фишек"
+    if amount >= 1_000:
+        base = amount / 1_000
+        return f"{fmt(amount)} {noun_form(round(base, 1), 'фишка', 'фишки', 'фишек')}"
+    return f"{amount} {noun_form(amount, 'фишка', 'фишки', 'фишек')}"
+
+def te(emoji_id: str, emoji: str) -> str:
+    """Shortcut for tg-emoji tag."""
+    return f'<tg-emoji emoji-id="{emoji_id}">{emoji}</tg-emoji>'
+
+# Часто используемые tg-emoji константы
+E_CASINO   = te("5258882890059091157", "🎰")
+E_COIN     = te("5904462880941545555", "🪙")
+E_COIN2    = te("5890848474563352982", "🪙")   # «отправить деньги»
+E_CHART    = te("5870930636742595124", "📊")
+E_CHART2   = te("5870921681735781843", "📊")
+E_WIN      = te("5870633910337015697", "✅")
+E_LOSE     = te("5870657884844462243", "❌")
+E_USER     = te("5870994129244131212", "👤")
+E_USERS    = te("5870772616305839506", "👥")
+E_GEAR     = te("5870982283724328568", "⚙️")
+E_RESET    = te("5345906554510012647", "🔄")
+E_FARM     = te("5778672437122045013", "📦")
+E_CLOCK    = te("5983150113483134607", "⏰")
+E_GIFT     = te("6032644646587338669", "🎁")
+E_PARTY    = te("6041731551845159060", "🎉")
+E_PEN      = te("5870676941614354370", "🖋")
+E_BACK     = te("5893057118545646106", "📰")
+E_ROCKET   = te("5373139891223741704", "🚀")
+E_BOMB     = te("5373141891321699086", "💣")
+E_HORN     = te("6039422865189638057", "📣")
+E_ALPHA    = te("5771851822897566479", "🔡")
+E_STAR     = te("5870982283724328568", "⭐")
+E_ATM      = te("5879814368572478751", "🏧")
+E_PING     = te("5983150113483134607", "⏰")
+E_PICK     = te("5904462880941545555", "⛏")   # fallback — нет нужного id
+E_HISTORY  = te("5870930636742595124", "📊")
+
+
+# ── Roulette helpers ───────────────────────────────────────────────────────
 
 RED_NUMBERS   = {1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36}
 BLACK_NUMBERS = {2,4,6,8,10,11,13,15,17,20,22,24,26,28,29,31,33,35}
 
-def noun_form(count, singular, genitive_2_4, genitive_5plus):
-    count = int(count) % 100
-    if count % 10 == 1 and count != 11:
-        return singular
-    elif count % 10 in (2, 3, 4) and count not in (12, 13, 14):
-        return genitive_2_4
-    else:
-        return genitive_5plus
-
-def format_chips(amount: int) -> str:
-    if amount >= 1_000_000:
-        millions = amount / 1_000_000
-        if millions == int(millions):
-            formatted = f"{int(millions)}кк"
-        else:
-            formatted = f"{millions:.1f}".rstrip('0').rstrip('.') + "кк"
-        return f"{formatted} фишек"
-    elif amount >= 1_000:
-        num = amount / 1_000
-        if num == int(num):
-            formatted = f"{int(num)}к"
-            base_num = int(num)
-        else:
-            formatted = f"{num:.1f}".rstrip('0').rstrip('.') + "к"
-            base_num = round(num, 1)
-    else:
-        formatted = str(amount)
-        base_num = amount
-
-    return f"{formatted} {noun_form(base_num, 'фишка', 'фишки', 'фишек')}"
-
-def fmt(n: int) -> str:
-    if n >= 1_000_000:
-        val = n / 1_000_000
-        if val == int(val):
-            return f"{int(val)}кк"
-        return f"{val:.1f}".rstrip('0').rstrip('.') + "кк"
-    elif n >= 1_000:
-        val = n / 1_000
-        if val == int(val):
-            return f"{int(val)}к"
-        return f"{val:.1f}".rstrip('0').rstrip('.') + "к"
-    return str(n)
+BET_LABELS = {
+    "red":    "Красное",   "black":  "Чёрное",
+    "even":   "ЧЁТНОЕ",    "odd":    "НЕЧЁТНОЕ",
+    "1-18":   "1–18",      "19-36":  "19–36",
+    "1st12":  "1ST 12",    "2nd12":  "2ND 12",    "3rd12":  "3RD 12",
+    "2to1_1": "2to1 (ряд 1)", "2to1_2": "2to1 (ряд 2)", "2to1_3": "2to1 (ряд 3)",
+}
 
 def spin_wheel() -> int:
     return random.randint(0, 36)
 
 def number_color(n: int) -> str:
-    if n == 0: return "🟢"
-    if n in RED_NUMBERS: return "🔴"
+    if n == 0:            return "🟢"
+    if n in RED_NUMBERS:  return "🔴"
     return "⚫"
 
 def check_bet(bet_type: str, number: int) -> bool:
@@ -496,608 +533,588 @@ def payout_multiplier(bet_type: str) -> int:
 def flip_coin() -> str:
     return random.choice(["heads", "tails"])
 
-def check_coin_bet(choice: str, result: str) -> bool:
-    return choice == result
 
-BET_LABELS = {
-    "red":    "Красное",
-    "black":  "Чёрное",
-    "even":   "ЧЁТНОЕ",
-    "odd":    "НЕЧЁТНОЕ",
-    "1-18":   "1–18",
-    "19-36":  "19–36",
-    "1st12":  "1ST 12",
-    "2nd12":  "2ND 12",
-    "3rd12":  "3RD 12",
-    "2to1_1": "2to1 (ряд 1)",
-    "2to1_2": "2to1 (ряд 2)",
-    "2to1_3": "2to1 (ряд 3)",
-}
+# ── Inline keyboards ───────────────────────────────────────────────────────
 
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+def _btn(text: str, callback_data: str | None = None, url: str | None = None,
+         icon: str | None = None) -> InlineKeyboardButton:
+    kwargs: dict = {"text": text}
+    if callback_data:
+        kwargs["callback_data"] = callback_data
+    if url:
+        kwargs["url"] = url
+    if icon:
+        kwargs["icon_custom_emoji_id"] = icon
+    return InlineKeyboardButton(**kwargs)
 
+def main_reply_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="🎰 Казино",  icon_custom_emoji_id="5258882890059091157"),
+                KeyboardButton(text="👤 Профиль", icon_custom_emoji_id="5870994129244131212"),
+            ],
+            [
+                KeyboardButton(text="🪙 Баланс",        icon_custom_emoji_id="5904462880941545555"),
+                KeyboardButton(text="🔄 Сбросить баланс", icon_custom_emoji_id="5345906554510012647"),
+            ],
+            [
+                KeyboardButton(text="⛏ Ферма",    icon_custom_emoji_id="5778672437122045013"),
+                KeyboardButton(text="📊 История",  icon_custom_emoji_id="5870930636742595124"),
+            ],
+            [
+                KeyboardButton(text="🏆 Топ игроков", icon_custom_emoji_id="5870921681735781843"),
+            ],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
-# ── Inline keyboards ─────────────────────────────────────────────────────────
-
-def main_menu_kb():
+def main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="Рулетка", callback_data="open_roulette",
-                                 icon_custom_emoji_id="5258882890059091157"),
-            InlineKeyboardButton(text="Орёл или Решка", callback_data="open_coin",
-                                 icon_custom_emoji_id="5774585885154131652"),
+            _btn("Рулетка",       "open_roulette",    icon="5258882890059091157"),
+            _btn("Орёл или Решка","open_coin",         icon="5774585885154131652"),
         ],
         [
-            InlineKeyboardButton(text="Ракета", callback_data="open_rocket",
-                                 icon_custom_emoji_id="5373139891223741704"),
-            InlineKeyboardButton(text="Сапер",  callback_data="open_minesweeper",
-                                 icon_custom_emoji_id="5373141891321699086"),
+            _btn("Ракета",  "open_rocket",       icon="5373139891223741704"),
+            _btn("Сапёр",   "open_minesweeper",  icon="5373141891321699086"),
         ],
         [
-            InlineKeyboardButton(text="Биткоин-ферма", callback_data="open_farm",
-                                 icon_custom_emoji_id="5904462880941545555"),
+            _btn("Биткоин-ферма", "open_farm", icon="5778672437122045013"),
         ],
         [
-            InlineKeyboardButton(text="Профиль", callback_data="stats",
-                                 icon_custom_emoji_id="5870921681735781843"),
-            InlineKeyboardButton(text="Сбросить баланс", callback_data="reset",
-                                 icon_custom_emoji_id="5345906554510012647"),
+            _btn("Профиль",        "stats", icon="5870921681735781843"),
+            _btn("Сбросить баланс","reset",  icon="5345906554510012647"),
+        ],
+        [
+            _btn("🏆 Топ игроков", "leaderboard", icon="5870921681735781843"),
         ],
     ])
 
-def farm_kb(user_id: int):
-    farm = get_farm(user_id)
-    bal  = get_balance(user_id)
+def stats_menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn("История ставок",  "stats_history", icon="5870930636742595124")],
+        [_btn("Накормить автора","donate",         icon="5904462880941545555")],
+        [_btn("Назад в меню",    "back_main",      icon="5893057118545646106")],
+    ])
 
-    if not farm:
-        can_buy = bal >= FARM_BUY_COST
-        buttons = []
-        if can_buy:
-            buttons.append([InlineKeyboardButton(
-                text=f"Купить ферму ({fmt(FARM_BUY_COST)})",
-                callback_data="farm_buy",
-                icon_custom_emoji_id="5904462880941545555"
-            )])
-        else:
-            buttons.append([InlineKeyboardButton(
-                text=f"Нужно {fmt(FARM_BUY_COST)} фишек",
-                callback_data="farm_noop"
-            )])
-        buttons.append([InlineKeyboardButton(
-            text="Назад", callback_data="back_main",
-            icon_custom_emoji_id="5893057118545646106"
-        )])
-        return InlineKeyboardMarkup(inline_keyboard=buttons)
+def game_result_kb(game_type: str, balance: int = 1) -> InlineKeyboardMarkup:
+    repeat = "repeat_coin" if game_type == "coin" else "repeat_roulette"
+    rows = [[_btn("Повторить", repeat, icon="5345906554510012647")]]
+    if balance <= 0:
+        rows.append([_btn("Сбросить баланс", "reset", icon="5345906554510012647")])
+    rows.append([_btn("В меню", "back_main", icon="5893057118545646106")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
-    level   = farm['level']
-    pending = get_farm_pending(farm)
+def bet_type_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            _btn("🔴 Красное", "bet_red"),
+            _btn("⚫ Чёрное",  "bet_black"),
+        ],
+        [_btn("1–18", "bet_1-18"), _btn("19–36", "bet_19-36")],
+        [_btn("ЧЁТНОЕ", "bet_even"), _btn("НЕЧЁТНОЕ", "bet_odd")],
+        [
+            _btn("1ST 12", "bet_1st12"),
+            _btn("2ND 12", "bet_2nd12"),
+            _btn("3RD 12", "bet_3rd12"),
+        ],
+        [
+            _btn("2to1 ряд 1", "bet_2to1_1"),
+            _btn("2to1 ряд 2", "bet_2to1_2"),
+            _btn("2to1 ряд 3", "bet_2to1_3"),
+        ],
+        [_btn("Конкретное число (x35)", "bet_number", icon="5771851822897566479")],
+        [_btn("Назад", "back_main", icon="5893057118545646106")],
+    ])
+
+def bet_amount_kb(balance: int, back: str = "back_bet_type") -> InlineKeyboardMarkup:
+    q1, q2, q3, q4 = (
+        max(1, round(balance * 0.25)),
+        max(1, round(balance * 0.50)),
+        max(1, round(balance * 0.75)),
+        balance,
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            _btn(f"25% ({fmt(q1)})", f"amount_{q1}"),
+            _btn(f"75% ({fmt(q3)})", f"amount_{q3}"),
+        ],
+        [
+            _btn(f"50% ({fmt(q2)})",   f"amount_{q2}"),
+            _btn(f"Ва-банк ({fmt(q4)})", f"amount_{q4}", icon="6041731551845159060"),
+        ],
+        [_btn("Ввести вручную", "amount_custom", icon="5870676941614354370")],
+        [_btn("Назад", back, icon="5893057118545646106")],
+    ])
+
+def coin_side_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            _btn("Орёл",  "coin_heads", icon="5774585885154131652"),
+            _btn("Решка", "coin_tails", icon="5904462880941545555"),
+        ],
+        [_btn("Назад", "back_main", icon="5893057118545646106")],
+    ])
+
+def rocket_amount_kb(balance: int) -> InlineKeyboardMarkup:
+    q1, q2, q3, q4 = (
+        max(1, round(balance * 0.25)),
+        max(1, round(balance * 0.50)),
+        max(1, round(balance * 0.75)),
+        balance,
+    )
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            _btn(f"25% ({fmt(q1)})", f"rocket_amount_{q1}"),
+            _btn(f"75% ({fmt(q3)})", f"rocket_amount_{q3}"),
+        ],
+        [
+            _btn(f"50% ({fmt(q2)})",   f"rocket_amount_{q2}"),
+            _btn(f"Ва-банк ({fmt(q4)})", f"rocket_amount_{q4}", icon="6041731551845159060"),
+        ],
+        [_btn("Ввести вручную", "rocket_amount_custom", icon="5870676941614354370")],
+        [_btn("Назад", "back_main", icon="5893057118545646106")],
+    ])
+
+def rocket_game_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        _btn("Дальше",  "rocket_next",    icon="5373139891223741704"),
+        _btn("Забрать", "rocket_cashout", icon="5904462880941545555"),
+    ]])
+
+def _minesweeper_mines_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            _btn("3 мины (x1.1)", "ms_mines_3"),
+            _btn("5 мин (x1.3)",  "ms_mines_5"),
+        ],
+        [
+            _btn("7 мин (x2.0)",   "ms_mines_7"),
+            _btn("10 мин (x2.8)", "ms_mines_10"),
+        ],
+        [_btn("Назад", "back_main", icon="5893057118545646106")],
+    ])
+
+def _minesweeper_kb(revealed: list) -> InlineKeyboardMarkup:
     buttons = []
-
-    if pending > 0:
-        buttons.append([InlineKeyboardButton(
-            text=f"Собрать +{fmt(pending)}",
-            callback_data="farm_collect",
-            icon_custom_emoji_id="5870633910337015697"
-        )])
-
-    if level < 10:
-        upgrade_cost = FARM_UPGRADE_COSTS.get(level, 0)
-        can_upgrade  = bal >= upgrade_cost
-        upgrade_text = f"Улучшить до ур.{level+1} ({fmt(upgrade_cost)})"
-        if can_upgrade:
-            buttons.append([InlineKeyboardButton(
-                text=upgrade_text, callback_data="farm_upgrade",
-                icon_custom_emoji_id="5870930636742595124"
-            )])
-        else:
-            buttons.append([InlineKeyboardButton(
-                text=f"Нужно {fmt(upgrade_cost)} для улучшения",
-                callback_data="farm_noop"
-            )])
-
-    buttons.append([InlineKeyboardButton(
-        text="Назад", callback_data="back_main",
-        icon_custom_emoji_id="5893057118545646106"
-    )])
+    for r, row in enumerate(revealed):
+        buttons.append([
+            InlineKeyboardButton(
+                text="✅" if row[c] else "🟫",
+                callback_data=f"ms_cell_{r}_{c}",
+            )
+            for c in range(5)
+        ])
+    buttons.append([_btn("Забрать", "ms_cashout",  icon="5870633910337015697")])
+    buttons.append([_btn("В меню",  "back_main",   icon="5893057118545646106")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def rocket_game_kb():
+def admin_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="Дальше",  callback_data="rocket_next",
-                                 icon_custom_emoji_id="5373139891223741704"),
-            InlineKeyboardButton(text="Забрать", callback_data="rocket_cashout",
-                                 icon_custom_emoji_id="5904462880941545555"),
-        ],
+        [_btn("Список пользователей", "admin_users",         icon="5870772616305839506")],
+        [_btn("Рассылка сообщения",   "admin_broadcast",     icon="6039422865189638057")],
+        [_btn("Очистить историю",     "admin_clear_history", icon="5870657884844462243")],
+        [_btn("Вернуться в меню",     "back_main",           icon="5893057118545646106")],
     ])
 
-def rocket_amount_kb(balance: int):
-    q1 = max(1, round(balance * 0.25))
-    q2 = max(1, round(balance * 0.50))
-    q3 = max(1, round(balance * 0.75))
-    q4 = balance
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text=f"25%  ({fmt(q1)})", callback_data=f"rocket_amount_{q1}"),
-            InlineKeyboardButton(text=f"75%  ({fmt(q3)})", callback_data=f"rocket_amount_{q3}"),
-        ],
-        [
-            InlineKeyboardButton(text=f"50%  ({fmt(q2)})", callback_data=f"rocket_amount_{q2}"),
-            InlineKeyboardButton(text=f"Ва-банк ({fmt(q4)})", callback_data=f"rocket_amount_{q4}",
-                                 icon_custom_emoji_id="6041731551845159060"),
-        ],
-        [InlineKeyboardButton(text="Ввести вручную", callback_data="rocket_amount_custom",
-                              icon_custom_emoji_id="5870676941614354370")],
-        [InlineKeyboardButton(text="Назад", callback_data="back_main",
-                              icon_custom_emoji_id="5893057118545646106")],
-    ])
-
-def bet_type_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="Красное", callback_data="bet_red",
-                                 icon_custom_emoji_id="5870657884844462243"),
-            InlineKeyboardButton(text="Чёрное",  callback_data="bet_black",
-                                 icon_custom_emoji_id="5870657884844462243"),
-        ],
-        [
-            InlineKeyboardButton(text="1-18",  callback_data="bet_1-18"),
-            InlineKeyboardButton(text="19-36", callback_data="bet_19-36"),
-        ],
-        [
-            InlineKeyboardButton(text="ЧЁТНОЕ",   callback_data="bet_even"),
-            InlineKeyboardButton(text="НЕЧЁТНОЕ", callback_data="bet_odd"),
-        ],
-        [
-            InlineKeyboardButton(text="1ST 12", callback_data="bet_1st12"),
-            InlineKeyboardButton(text="2ND 12", callback_data="bet_2nd12"),
-            InlineKeyboardButton(text="3RD 12", callback_data="bet_3rd12"),
-        ],
-        [
-            InlineKeyboardButton(text="2to1 (ряд 1)", callback_data="bet_2to1_1"),
-            InlineKeyboardButton(text="2to1 (ряд 2)", callback_data="bet_2to1_2"),
-            InlineKeyboardButton(text="2to1 (ряд 3)", callback_data="bet_2to1_3"),
-        ],
-        [InlineKeyboardButton(text="Конкретное число (x35)", callback_data="bet_number",
-                              icon_custom_emoji_id="5771851822897566479")],
-        [InlineKeyboardButton(text="Назад", callback_data="back_main",
-                              icon_custom_emoji_id="5893057118545646106")],
-    ])
-
-def coin_side_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="Орёл", callback_data="coin_heads",
-                                 icon_custom_emoji_id="5774585885154131652"),
-            InlineKeyboardButton(text="Решка", callback_data="coin_tails",
-                                 icon_custom_emoji_id="5904462880941545555"),
-        ],
-        [InlineKeyboardButton(text="Назад", callback_data="back_main",
-                              icon_custom_emoji_id="5893057118545646106")],
-    ])
-
-def bet_amount_kb(balance: int):
-    q1 = max(1, round(balance * 0.25))
-    q2 = max(1, round(balance * 0.50))
-    q3 = max(1, round(balance * 0.75))
-    q4 = balance
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text=f"25%  ({fmt(q1)})", callback_data=f"amount_{q1}"),
-            InlineKeyboardButton(text=f"75%  ({fmt(q3)})", callback_data=f"amount_{q3}"),
-        ],
-        [
-            InlineKeyboardButton(text=f"50%  ({fmt(q2)})", callback_data=f"amount_{q2}"),
-            InlineKeyboardButton(text=f"Ва-банк ({fmt(q4)})", callback_data=f"amount_{q4}",
-                                 icon_custom_emoji_id="6041731551845159060"),
-        ],
-        [InlineKeyboardButton(text="Ввести вручную", callback_data="amount_custom",
-                              icon_custom_emoji_id="5870676941614354370")],
-        [InlineKeyboardButton(text="Назад", callback_data="back_bet_type",
-                              icon_custom_emoji_id="5893057118545646106")],
-    ])
-
-def admin_menu_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Список пользователей", callback_data="admin_users",
-                              icon_custom_emoji_id="5870772616305839506")],
-        [InlineKeyboardButton(text="Рассылка сообщения",  callback_data="admin_broadcast",
-                              icon_custom_emoji_id="6039422865189638057")],
-        [InlineKeyboardButton(text="Очистить историю",    callback_data="admin_clear_history",
-                              icon_custom_emoji_id="5870657884844462243")],
-        [InlineKeyboardButton(text="Вернуться в меню",    callback_data="back_main",
-                              icon_custom_emoji_id="5893057118545646106")],
-    ])
-
-def stats_menu_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="История ставок", callback_data="stats_history",
-                              icon_custom_emoji_id="5870930636742595124")],
-        [InlineKeyboardButton(text="Накормить автора", callback_data="donate",
-                              icon_custom_emoji_id="5904462880941545555")],
-        [InlineKeyboardButton(text="Назад в меню", callback_data="back_main",
-                              icon_custom_emoji_id="5893057118545646106")],
-    ])
-
-def game_result_kb(game_type: str):
-    repeat_data = "repeat_coin" if game_type == "coin" else "repeat_roulette"
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Повторить", callback_data=repeat_data,
-                              icon_custom_emoji_id="5345906554510012647")],
-        [InlineKeyboardButton(text="В меню", callback_data="back_main",
-                              icon_custom_emoji_id="5893057118545646106")],
-    ])
-
-def donate_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="50 звёзд",   callback_data="donate_50",
-                              icon_custom_emoji_id="5870982283724328568")],
-        [InlineKeyboardButton(text="100 звёзд",  callback_data="donate_100",
-                              icon_custom_emoji_id="5870982283724328568")],
-        [InlineKeyboardButton(text="250 звёзд",  callback_data="donate_250",
-                              icon_custom_emoji_id="5870982283724328568")],
-        [InlineKeyboardButton(text="500 звёзд",  callback_data="donate_500",
-                              icon_custom_emoji_id="5870982283724328568")],
-        [InlineKeyboardButton(text="1000 звёзд", callback_data="donate_1000",
-                              icon_custom_emoji_id="5870982283724328568")],
-        [InlineKeyboardButton(text="Своя сумма", callback_data="donate_custom",
-                              icon_custom_emoji_id="5870676941614354370")],
-        [InlineKeyboardButton(text="Назад в меню", callback_data="back_main",
-                              icon_custom_emoji_id="5893057118545646106")],
-    ])
-
-def users_list_kb(users: list, page: int = 0):
-    per_page  = 5
-    start_idx = page * per_page
-    end_idx   = start_idx + per_page
-    page_users = users[start_idx:end_idx]
-
-    buttons = []
-    for user in page_users:
-        uid      = user['user_id']
-        username = user['username'] or f"ID {uid}"
-        balance  = user['balance']
-        buttons.append([InlineKeyboardButton(
-            text=f"{username} ({format_chips(balance)})",
-            callback_data=f"admin_edit_user_{uid}",
-            icon_custom_emoji_id="5870994129244131212"
-        )])
-
+def users_list_kb(users: list, page: int = 0) -> InlineKeyboardMarkup:
+    per_page   = 5
+    page_users = users[page * per_page : (page + 1) * per_page]
+    buttons = [
+        [_btn(
+            f"{u['username'] or f'ID {u[\"user_id\"]}'} ({format_chips(u['balance'])})",
+            f"admin_edit_user_{u['user_id']}",
+            icon="5870994129244131212",
+        )]
+        for u in page_users
+    ]
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton(text="Назад", callback_data=f"admin_users_page_{page-1}",
-                                        icon_custom_emoji_id="5893057118545646106"))
-    if end_idx < len(users):
-        nav.append(InlineKeyboardButton(text="Вперед", callback_data=f"admin_users_page_{page+1}",
-                                        icon_custom_emoji_id="5893057118545646106"))
+        nav.append(_btn("◁ Назад", f"admin_users_page_{page-1}"))
+    if (page + 1) * per_page < len(users):
+        nav.append(_btn("Вперёд ▷", f"admin_users_page_{page+1}"))
     if nav:
         buttons.append(nav)
-
-    buttons.append([InlineKeyboardButton(text="В меню админа", callback_data="admin_back",
-                                         icon_custom_emoji_id="5893057118545646106")])
+    buttons.append([_btn("В меню админа", "admin_back", icon="5893057118545646106")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def edit_user_kb(user_id: int):
+def edit_user_kb(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Пополнить баланс", callback_data=f"admin_edit_balance_{user_id}",
-                              icon_custom_emoji_id="5904462880941545555")],
-        [InlineKeyboardButton(text="История ставок",   callback_data=f"admin_user_history_{user_id}",
-                              icon_custom_emoji_id="5870930636742595124")],
-        [InlineKeyboardButton(text="Назад к списку",   callback_data="admin_users_back",
-                              icon_custom_emoji_id="5893057118545646106")],
+        [_btn("Пополнить баланс", f"admin_edit_balance_{user_id}", icon="5904462880941545555")],
+        [_btn("История ставок",   f"admin_user_history_{user_id}", icon="5870930636742595124")],
+        [_btn("Назад к списку",   "admin_users_back",              icon="5893057118545646106")],
     ])
 
-def _minesweeper_mines_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="3 мины (x1.1)",  callback_data="ms_mines_3"),
-            InlineKeyboardButton(text="5 мин (x1.3)",   callback_data="ms_mines_5"),
-        ],
-        [
-            InlineKeyboardButton(text="7 мин (x2.0)",   callback_data="ms_mines_7"),
-            InlineKeyboardButton(text="10 мин (x2.8)",  callback_data="ms_mines_10"),
-        ],
-        [InlineKeyboardButton(text="Назад", callback_data="back_main",
-                              icon_custom_emoji_id="5893057118545646106")],
-    ])
+def donate_kb() -> InlineKeyboardMarkup:
+    rows = [
+        [_btn(f"{n} звёзд", f"donate_{n}", icon="5870982283724328568")]
+        for n in (50, 100, 250, 500, 1000)
+    ]
+    rows.append([_btn("Своя сумма",    "donate_custom", icon="5870676941614354370")])
+    rows.append([_btn("Назад в меню",  "back_main",     icon="5893057118545646106")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
-def _minesweeper_kb(revealed: list):
-    buttons = []
-    for row_idx in range(5):
-        row_buttons = []
-        for col_idx in range(5):
-            t = "✅" if revealed[row_idx][col_idx] else "🟫"
-            row_buttons.append(InlineKeyboardButton(text=t, callback_data=f"ms_cell_{row_idx}_{col_idx}"))
-        buttons.append(row_buttons)
-    buttons.append([InlineKeyboardButton(text="Забрать", callback_data="ms_cashout",
-                                         icon_custom_emoji_id="5870633910337015697")])
-    buttons.append([InlineKeyboardButton(text="В меню", callback_data="back_main",
-                                         icon_custom_emoji_id="5893057118545646106")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+def farm_kb(user_id: int) -> InlineKeyboardMarkup:
+    farm = get_farm(user_id)
+    bal  = get_balance(user_id)
+    if not farm:
+        rows = []
+        if bal >= FARM_BUY_COST:
+            rows.append([_btn(f"Купить ферму ({fmt(FARM_BUY_COST)})", "farm_buy", icon="5778672437122045013")])
+        else:
+            rows.append([_btn(f"Нужно {fmt(FARM_BUY_COST)} фишек", "farm_noop")])
+        rows.append([_btn("Назад", "back_main", icon="5893057118545646106")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    level, pending = farm["level"], get_farm_pending(farm)
+    rows = []
+    if pending > 0:
+        rows.append([_btn(f"Собрать +{fmt(pending)}", "farm_collect", icon="5870633910337015697")])
+    if level < 10:
+        cost = FARM_UPGRADE_COSTS.get(level, 0)
+        if bal >= cost:
+            rows.append([_btn(f"Улучшить до ур.{level+1} ({fmt(cost)})", "farm_upgrade", icon="5870930636742595124")])
+        else:
+            rows.append([_btn(f"Нужно {fmt(cost)} для улучшения", "farm_noop")])
+    rows.append([_btn("Назад", "back_main", icon="5893057118545646106")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-# ── Farm text helper ──────────────────────────────────────────────────────────
+# ── Text builders ──────────────────────────────────────────────────────────
 
 def farm_text(user_id: int) -> str:
     farm    = get_farm(user_id)
     bal     = get_balance(user_id)
     pending = get_farm_pending(farm)
-
     if not farm:
         return (
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> <b>Биткоин-ферма</b>\n\n'
+            f'{E_FARM} <b>Биткоин-ферма</b>\n\n'
             f'У вас ещё нет фермы.\n\n'
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Стоимость: <b>{format_chips(FARM_BUY_COST)}</b>\n'
-            f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Доход: <b>{format_chips(FARM_INCOME[1])} / час</b>\n\n'
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ваш баланс: <b>{format_chips(bal)}</b>'
+            f'{E_COIN} Стоимость: <b>{format_chips(FARM_BUY_COST)}</b>\n'
+            f'{E_CHART} Доход: <b>{format_chips(FARM_INCOME[1])} / час</b>\n\n'
+            f'{E_COIN} Ваш баланс: <b>{format_chips(bal)}</b>'
         )
-
-    level        = farm['level']
-    income_hour  = FARM_INCOME.get(level, 0)
-    name         = FARM_LEVEL_NAMES.get(level, f"Уровень {level}")
-    upgrade_cost = FARM_UPGRADE_COSTS.get(level)
-
-    last = farm['last_collect']
+    level       = farm["level"]
+    name        = FARM_LEVEL_NAMES.get(level, f"Уровень {level}")
+    last        = farm["last_collect"]
     if last.tzinfo is None:
         last = last.replace(tzinfo=pytz.utc)
-    now   = datetime.now(pytz.utc)
-    hours = (now - last).total_seconds() / 3600
-    hours = min(hours, 24)
-
+    hours = min((datetime.now(pytz.utc) - last).total_seconds() / 3600, 24)
     text = (
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> <b>Биткоин-ферма</b>\n\n'
+        f'{E_FARM} <b>Биткоин-ферма</b>\n\n'
         f'⛏ Тип: <b>{name}</b>\n'
-        f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Уровень: <b>{level} / 10</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Доход: <b>{format_chips(income_hour)} / час</b>\n'
-        f'<tg-emoji emoji-id="5983150113483134607">⏰</tg-emoji> Накоплено за {hours:.1f}ч: <b>{format_chips(pending)}</b>\n'
+        f'{E_CHART} Уровень: <b>{level} / 10</b>\n'
+        f'{E_COIN} Доход: <b>{format_chips(FARM_INCOME.get(level, 0))} / час</b>\n'
+        f'{E_CLOCK} Накоплено за {hours:.1f}ч: <b>{format_chips(pending)}</b>\n'
     )
-    if level < 10 and upgrade_cost:
-        text += f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Улучшение до ур.{level+1}: <b>{format_chips(upgrade_cost)}</b>\n'
-    text += f'\n<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ваш баланс: <b>{format_chips(bal)}</b>'
+    if level < 10 and (cost := FARM_UPGRADE_COSTS.get(level)):
+        text += f'{E_CHART} Улучшение до ур.{level+1}: <b>{format_chips(cost)}</b>\n'
+    text += f'\n{E_COIN} Ваш баланс: <b>{format_chips(bal)}</b>'
     return text
 
+def profile_text(user: dict) -> str:
+    wins, losses = user["wins"], user["losses"]
+    total = wins + losses
+    rate  = round(wins / total * 100, 1) if total else 0
+    return (
+        f'{E_CHART2} <b>Профиль</b>\n\n'
+        f'{E_USER} Игрок: <b>{html.escape(user["username"] or "Неизвестно")}</b>\n'
+        f'{E_COIN} Баланс: <b>{format_chips(user["balance"])}</b>\n'
+        f'{E_WIN} Побед: <b>{wins}</b>\n'
+        f'{E_LOSE} Поражений: <b>{losses}</b>\n'
+        f'{E_CHART} Процент побед: <b>{rate}%</b>'
+    )
 
-# ── Handlers ──────────────────────────────────────────────────────────────────
+def history_text(user_id: int) -> str:
+    history = get_history(user_id, limit=15)
+    game_names = {
+        "coin": "Монета", "rocket": "Ракета",
+        "minesweeper": "Сапёр", "admin_topup": "Пополнение", "farm": "Ферма",
+    }
+    if not history:
+        return f'{E_HISTORY} <b>Нет истории ставок</b>'
+
+    lines = [f'{E_HISTORY} <b>История ставок (последние 15):</b>\n']
+    for e in history:
+        em   = E_WIN if e["is_win"] else E_LOSE
+        sign = "+" if e["is_win"] else "-"
+        lines.append(f'{em} {sign}{e["amount"]} — {game_names.get(e["game_type"], "Рулетка")}')
+
+    stats = get_user_history_stats(user_id)
+    if stats and (stats["win_count"] or stats["lose_count"]):
+        won  = stats["total_won"]  or 0
+        lost = stats["total_lost"] or 0
+        net  = won - lost
+        lines.append("")
+        lines.append(f'{E_WIN} Выигрыши: <b>+{won}</b>')
+        lines.append(f'{E_LOSE} Проигрыши: <b>-{lost}</b>')
+        sign = "+" if net > 0 else ""
+        emoji = E_WIN if net > 0 else (E_LOSE if net < 0 else E_COIN)
+        lines.append(f'{emoji} Итог: <b>{sign}{net}</b>')
+    return "\n".join(lines)
+
+def leaderboard_text() -> str:
+    top = get_leaderboard(10)
+    if not top:
+        return f'{E_CHART2} <b>Топ пуст</b>'
+    medals = ["🥇", "🥈", "🥉"] + ["4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣","🔟"]
+    lines  = [f'{E_CHART2} <b>Топ-10 игроков</b>\n']
+    for i, u in enumerate(top):
+        name = html.escape(u["username"] or "Неизвестно")
+        lines.append(f'{medals[i]} <b>{name}</b> — {format_chips(u["balance"])}')
+    return "\n".join(lines)
+
+def _rocket_text(amount: int, multiplier: float) -> str:
+    potential = int(amount * multiplier)
+    stars     = "⭐" * min(int(multiplier), 10)
+    return (
+        f'{E_ROCKET} <b>Ракета летит!</b>\n\n'
+        f'{E_COIN} Ставка: <b>{format_chips(amount)}</b>\n'
+        f'{E_CHART} Множитель: <b>x{multiplier:.2f}</b>  {stars}\n'
+        f'{E_ATM} Можно забрать: <b>{format_chips(potential)}</b>\n\n'
+        f'Нажми <b>«Дальше»</b> чтобы лететь выше\n'
+        f'или <b>«Забрать»</b> чтобы зафиксировать!'
+    )
+
+def _minesweeper_text(amount: int, field: list, revealed: list, mines: int) -> str:
+    base_mult    = {3: 1.1, 5: 1.3, 7: 2.0, 10: 2.8}.get(mines, 2.0)
+    opened_count = sum(sum(row) for row in revealed)
+    multiplier   = base_mult * (1.0 + opened_count * 0.05)
+    potential    = int(amount * multiplier)
+    lines        = [
+        f'{E_BOMB} <b>Сапёр</b>\n',
+        f'{E_COIN} Ставка: <b>{format_chips(amount)}</b>',
+        f'{E_BOMB} Мин: <b>{mines}</b>',
+        f'{E_CHART} Множитель: <b>x{multiplier:.2f}</b>',
+        f'{E_ATM} Можно забрать: <b>{format_chips(potential)}</b>\n',
+        '<b>Открывай ячейки:</b>',
+    ]
+    for r, row in enumerate(revealed):
+        row_str = ""
+        for c, is_open in enumerate(row):
+            if is_open:
+                row_str += "💥" if field[r][c] else "✅"
+            else:
+                row_str += "🟫"
+        lines.append(row_str)
+    return "\n".join(lines)
+
+
+# ── Utility ────────────────────────────────────────────────────────────────
+
+async def safe_edit_or_send(cq: CallbackQuery, text: str, reply_markup=None):
+    try:
+        await cq.message.edit_text(text, parse_mode="HTML", reply_markup=reply_markup)
+    except Exception:
+        try:
+            await cq.message.delete()
+        except Exception:
+            pass
+        await cq.message.answer(text, parse_mode="HTML", reply_markup=reply_markup)
+
+def generate_crash_point() -> float:
+    r = random.random()
+    if r < 0.40:   return round(random.uniform(1.0,  1.5), 2)
+    elif r < 0.65: return round(random.uniform(1.5,  2.5), 2)
+    elif r < 0.80: return round(random.uniform(2.5,  4.0), 2)
+    elif r < 0.92: return round(random.uniform(4.0,  8.0), 2)
+    else:          return round(random.uniform(8.0, 20.0), 2)
+
+def next_multiplier(current: float) -> float:
+    return round(current + round(random.uniform(0.1, 0.6), 2), 2)
+
+def generate_minesweeper_field(size: int = 5, mines: int = 5) -> list:
+    field  = [[False] * size for _ in range(size)]
+    placed = 0
+    while placed < mines:
+        r, c = random.randint(0, size - 1), random.randint(0, size - 1)
+        if not field[r][c]:
+            field[r][c] = True
+            placed += 1
+    return field
+
+
+# ── /start /help /ping ─────────────────────────────────────────────────────
 
 @dp.message(CommandStart())
 async def cmd_start(msg: Message, state: FSMContext):
     await state.clear()
-    bal = get_or_create_user(msg.from_user.id, msg.from_user.username or "игрок")
+    bal  = get_or_create_user(msg.from_user.id, msg.from_user.username or "игрок")
     text = (
-        f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Добро пожаловать в Казино!</b>\n\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ваш баланс: <b>{format_chips(bal)}</b>\n\n'
-        f'<tg-emoji emoji-id="5778672437122045013">📦</tg-emoji> Доступные игры:'
+        f'{E_CASINO} <b>Добро пожаловать в Казино!</b>\n\n'
+        f'{E_COIN} Ваш баланс: <b>{format_chips(bal)}</b>\n\n'
+        f'{E_FARM} Доступные игры:'
     )
     await msg.answer(text, parse_mode="HTML", reply_markup=main_reply_kb())
     await msg.answer(
-        '<tg-emoji emoji-id="5778672437122045013">📦</tg-emoji> <b>Выберите игру:</b>',
+        f'{E_FARM} <b>Выберите игру:</b>',
         parse_mode="HTML",
-        reply_markup=main_menu_kb()
+        reply_markup=main_menu_kb(),
     )
 
+@dp.message(Command("help"))
+async def cmd_help(msg: Message):
+    text = (
+        f'{E_CASINO} <b>Помощь</b>\n\n'
+        '<b>Команды:</b>\n'
+        '/start — главное меню\n'
+        '/help — эта справка\n'
+        '/ping — проверить отклик\n\n'
+        '<b>Игры:</b>\n'
+        f'{E_CASINO} <b>Рулетка</b> — классическая европейская рулетка\n'
+        f'{E_ROCKET} <b>Ракета</b> — останови в нужный момент\n'
+        f'{E_BOMB} <b>Сапёр</b> — открывай клетки без мин\n'
+        '🪙 <b>Монета</b> — орёл или решка (x2)\n\n'
+        f'{E_FARM} <b>Ферма</b> — пассивный доход каждый час\n\n'
+        f'{E_GIFT} Каждый день в <b>12:00 МСК</b> начисляется бонус +10 000 фишек!'
+    )
+    await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
 
 @dp.message(Command("ping"))
 async def cmd_ping(msg: Message):
-    start_time = time.perf_counter()
-    sent_msg = await msg.answer(
-        '<tg-emoji emoji-id="5983150113483134607">⏰</tg-emoji> ПОНГ...',
-        parse_mode="HTML"
-    )
-    end_time = time.perf_counter()
-    response_time_ms = round((end_time - start_time) * 1000, 2)
-    await sent_msg.edit_text(
-        f'<tg-emoji emoji-id="5983150113483134607">⏰</tg-emoji> <b>ПОНГ</b>\n\n'
-        f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Отклик: <b>{response_time_ms} ms</b>',
-        parse_mode="HTML"
+    t0   = time.perf_counter()
+    sent = await msg.answer(f'{E_PING} ПОНГ...', parse_mode="HTML")
+    ms   = round((time.perf_counter() - t0) * 1000, 2)
+    await sent.edit_text(
+        f'{E_PING} <b>ПОНГ</b>\n\n{E_CHART} Отклик: <b>{ms} ms</b>',
+        parse_mode="HTML",
     )
 
 
-# ── Reply keyboard text handlers ──────────────────────────────────────────────
+# ── Reply keyboard handlers ────────────────────────────────────────────────
 
 @dp.message(F.text == "🎰 Казино")
 async def reply_casino(msg: Message, state: FSMContext):
     await state.clear()
-    bal = get_balance(msg.from_user.id)
-    if not bal and bal != 0:
-        get_or_create_user(msg.from_user.id, msg.from_user.username or "игрок")
-        bal = STARTING_BALANCE
-    text = (
-        f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Казино</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>'
+    bal = get_or_create_user(msg.from_user.id, msg.from_user.username or "игрок")
+    await msg.answer(
+        f'{E_CASINO} <b>Казино</b>\n{E_COIN} Баланс: <b>{format_chips(bal)}</b>',
+        parse_mode="HTML",
+        reply_markup=main_menu_kb(),
     )
-    await msg.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
-
 
 @dp.message(F.text == "👤 Профиль")
-async def reply_profile(msg: Message, state: FSMContext):
-    row = get_user(msg.from_user.id)
-    if not row:
-        await msg.answer(
-            '<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Сначала запустите /start',
-            parse_mode="HTML"
-        )
+async def reply_profile(msg: Message):
+    user = get_user(msg.from_user.id)
+    if not user:
+        await msg.answer(f'{E_LOSE} Сначала запустите /start', parse_mode="HTML")
         return
-    _, username, balance, wins, losses, *_ = row
-    total = wins + losses
-    rate  = round(wins / total * 100, 1) if total else 0
-    text = (
-        f'<tg-emoji emoji-id="5870921681735781843">📊</tg-emoji> <b>Профиль</b>\n\n'
-        f'<tg-emoji emoji-id="5870994129244131212">👤</tg-emoji> Игрок: <b>{username or "Неизвестно"}</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(balance)}</b>\n'
-        f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Побед: <b>{wins}</b>\n'
-        f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Поражений: <b>{losses}</b>\n'
-        f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Процент побед: <b>{rate}%</b>'
-    )
-    await msg.answer(text, parse_mode="HTML", reply_markup=stats_menu_kb())
-
+    await msg.answer(profile_text(user), parse_mode="HTML", reply_markup=stats_menu_kb())
 
 @dp.message(F.text == "🪙 Баланс")
 async def reply_balance(msg: Message):
     bal = get_balance(msg.from_user.id)
     await msg.answer(
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ваш баланс: <b>{format_chips(bal)}</b>',
-        parse_mode="HTML"
+        f'{E_COIN} Ваш баланс: <b>{format_chips(bal)}</b>', parse_mode="HTML"
     )
-
 
 @dp.message(F.text == "🔄 Сбросить баланс")
 async def reply_reset(msg: Message, state: FSMContext):
     reset_balance(msg.from_user.id)
     await state.clear()
     await msg.answer(
-        f'<tg-emoji emoji-id="5345906554510012647">🔄</tg-emoji> <b>Баланс сброшен!</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>1000 фишек</b>',
+        f'{E_RESET} <b>Баланс сброшен!</b>\n{E_COIN} Новый баланс: <b>1 000 фишек</b>',
         parse_mode="HTML",
-        reply_markup=main_menu_kb()
+        reply_markup=main_menu_kb(),
     )
-
 
 @dp.message(F.text == "⛏ Ферма")
 async def reply_farm(msg: Message):
-    user_id = msg.from_user.id
-    text = farm_text(user_id)
-    await msg.answer(text, parse_mode="HTML", reply_markup=farm_kb(user_id))
-
+    uid = msg.from_user.id
+    await msg.answer(farm_text(uid), parse_mode="HTML", reply_markup=farm_kb(uid))
 
 @dp.message(F.text == "📊 История")
 async def reply_history(msg: Message):
-    user_id = msg.from_user.id
-    history = get_history(user_id, limit=15)
+    await msg.answer(
+        history_text(msg.from_user.id),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [_btn("Назад в статистику", "stats", icon="5893057118545646106")],
+        ]),
+    )
 
-    if not history:
-        text = f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> <b>Нет истории ставок</b>'
-    else:
-        text = f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> <b>История ставок (последние 15):</b>\n\n'
-        for entry in history:
-            status_emoji = (
-                f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji>'
-                if entry['is_win'] else
-                f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji>'
-            )
-            game_names = {"coin": "Монета", "rocket": "Ракета", "minesweeper": "Сапер",
-                          "admin_topup": "Пополнение", "farm": "Ферма"}
-            game_name = game_names.get(entry['game_type'], "Рулетка")
-            sign = '+' if entry['is_win'] else '-'
-            text += f'{status_emoji} {sign}{entry["amount"]} — {game_name}\n'
-
-    stats = get_user_history_stats(user_id)
-    if stats and (stats['win_count'] or stats['lose_count']):
-        total_won  = stats['total_won']  or 0
-        total_lost = stats['total_lost'] or 0
-        text += f'\n<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Выигрыши: <b>+{total_won}</b>\n'
-        text += f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Проигрыши: <b>-{total_lost}</b>\n'
-        net = total_won - total_lost
-        if net > 0:
-            text += f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Итог: <b>+{net}</b>'
-        elif net < 0:
-            text += f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Итог: <b>{net}</b>'
-        else:
-            text += f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Итог: <b>0</b>'
-
-    await msg.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад в статистику", callback_data="stats",
-                              icon_custom_emoji_id="5893057118545646106")],
-    ]))
+@dp.message(F.text == "🏆 Топ игроков")
+async def reply_leaderboard(msg: Message):
+    await msg.answer(
+        leaderboard_text(),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [_btn("Назад в меню", "back_main", icon="5893057118545646106")],
+        ]),
+    )
 
 
-# ── Callback handlers ─────────────────────────────────────────────────────────
+# ── Navigation callbacks ───────────────────────────────────────────────────
 
 @dp.callback_query(F.data == "back_main")
 async def back_main(cq: CallbackQuery, state: FSMContext):
     await state.clear()
     bal = get_balance(cq.from_user.id)
-    text = (
-        f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Казино</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>'
+    await safe_edit_or_send(
+        cq,
+        f'{E_CASINO} <b>Казино</b>\n{E_COIN} Баланс: <b>{format_chips(bal)}</b>',
+        reply_markup=main_menu_kb(),
     )
-    await safe_edit_or_send(cq, text, reply_markup=main_menu_kb())
-
 
 @dp.callback_query(F.data == "balance")
 async def show_balance(cq: CallbackQuery):
-    bal = get_balance(cq.from_user.id)
-    await cq.answer(f'Ваш баланс: {format_chips(bal)}', show_alert=True)
-
+    await cq.answer(f'Ваш баланс: {format_chips(get_balance(cq.from_user.id))}', show_alert=True)
 
 @dp.callback_query(F.data == "stats")
 async def show_stats(cq: CallbackQuery):
-    row = get_user(cq.from_user.id)
-    if not row:
+    user = get_user(cq.from_user.id)
+    if not user:
         await cq.answer("Сначала запустите /start", show_alert=True)
         return
-    _, username, balance, wins, losses, *_ = row
-    total = wins + losses
-    rate  = round(wins / total * 100, 1) if total else 0
-    text = (
-        f'<tg-emoji emoji-id="5870921681735781843">📊</tg-emoji> <b>Профиль</b>\n\n'
-        f'<tg-emoji emoji-id="5870994129244131212">👤</tg-emoji> Игрок: <b>{username or "Неизвестно"}</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(balance)}</b>\n'
-        f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Побед: <b>{wins}</b>\n'
-        f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Поражений: <b>{losses}</b>\n'
-        f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Процент побед: <b>{rate}%</b>'
-    )
-    await safe_edit_or_send(cq, text, reply_markup=stats_menu_kb())
-
+    await safe_edit_or_send(cq, profile_text(user), reply_markup=stats_menu_kb())
 
 @dp.callback_query(F.data == "stats_history")
 async def show_history(cq: CallbackQuery):
-    user_id = cq.from_user.id
-    history = get_history(user_id, limit=15)
+    await safe_edit_or_send(
+        cq,
+        history_text(cq.from_user.id),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [_btn("Назад в статистику", "stats", icon="5893057118545646106")],
+        ]),
+    )
 
-    if not history:
-        text = f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> <b>Нет истории ставок</b>'
-    else:
-        text = f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> <b>История ставок (последние 15):</b>\n\n'
-        for entry in history:
-            status_emoji = (
-                f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji>'
-                if entry['is_win'] else
-                f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji>'
-            )
-            game_names = {"coin": "Монета", "rocket": "Ракета", "minesweeper": "Сапер",
-                          "admin_topup": "Пополнение", "farm": "Ферма"}
-            game_name = game_names.get(entry['game_type'], "Рулетка")
-            sign = '+' if entry['is_win'] else '-'
-            text += f'{status_emoji} {sign}{entry["amount"]} — {game_name}\n'
+@dp.callback_query(F.data == "leaderboard")
+async def show_leaderboard(cq: CallbackQuery):
+    await safe_edit_or_send(
+        cq,
+        leaderboard_text(),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [_btn("Назад в меню", "back_main", icon="5893057118545646106")],
+        ]),
+    )
 
-    stats = get_user_history_stats(user_id)
-    if stats and (stats['win_count'] or stats['lose_count']):
-        total_won  = stats['total_won']  or 0
-        total_lost = stats['total_lost'] or 0
-        text += f'\n<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Выигрыши: <b>+{total_won}</b>\n'
-        text += f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Проигрыши: <b>-{total_lost}</b>\n'
-        net = total_won - total_lost
-        if net > 0:
-            text += f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Итог: <b>+{net}</b>'
-        elif net < 0:
-            text += f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Итог: <b>{net}</b>'
-        else:
-            text += f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Итог: <b>0</b>'
+@dp.callback_query(F.data == "reset")
+async def reset_handler(cq: CallbackQuery, state: FSMContext):
+    reset_balance(cq.from_user.id)
+    await state.clear()
+    await cq.answer("Баланс сброшен до 1 000 фишек!", show_alert=True)
+    await safe_edit_or_send(
+        cq,
+        f'{E_RESET} <b>Баланс сброшен!</b>\n{E_COIN} Новый баланс: <b>1 000 фишек</b>',
+        reply_markup=main_menu_kb(),
+    )
 
-    await safe_edit_or_send(cq, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад в статистику", callback_data="stats",
-                              icon_custom_emoji_id="5893057118545646106")],
-    ]))
 
+# ── Donate ─────────────────────────────────────────────────────────────────
 
 @dp.callback_query(F.data == "donate")
 async def open_donate(cq: CallbackQuery):
-    text = (
-        '<tg-emoji emoji-id="6032644646587338669">🎁</tg-emoji> <b>Накормить автора</b>\n\n'
-        'Выберите количество звезд для поддержки разработки\n'
-        '(звезды идут разработчику, спасибо! 💙)'
+    await safe_edit_or_send(
+        cq,
+        f'{E_GIFT} <b>Накормить автора</b>\n\nВыберите количество звёзд для поддержки разработки\n(звёзды идут разработчику, спасибо! 💙)',
+        reply_markup=donate_kb(),
     )
-    await safe_edit_or_send(cq, text, reply_markup=donate_kb())
 
-
-@dp.callback_query(F.data.startswith("donate_") & (F.data != "donate_custom"))
+@dp.callback_query(F.data.regexp(r"^donate_(\d+)$"))
 async def process_donation(cq: CallbackQuery):
-    amount_str = cq.data.split("_")[1]
-    try:
-        amount = int(amount_str)
-    except:
-        await cq.answer("Некорректная сумма", show_alert=True)
-        return
+    amount = int(cq.data.split("_")[1])
     await bot.send_invoice(
         chat_id=cq.from_user.id,
         title="Поддержка разработчика",
@@ -1108,199 +1125,132 @@ async def process_donation(cq: CallbackQuery):
         provider_token="",
     )
 
-
 @dp.callback_query(F.data == "donate_custom")
-async def ask_custom_donate_amount(cq: CallbackQuery, state: FSMContext):
+async def ask_custom_donate(cq: CallbackQuery, state: FSMContext):
     await state.set_state(DonateState.entering_custom_amount)
     await safe_edit_or_send(
         cq,
-        '<tg-emoji emoji-id="5870676941614354370">🖋</tg-emoji> <b>Введите сумму в звездах (⭐)</b>\n\n'
-        'Минимум: 1 ⭐, максимум: 10000 ⭐',
+        f'{E_PEN} <b>Введите сумму в звёздах (⭐)</b>\n\nМинимум: 1 ⭐, максимум: 10 000 ⭐',
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Назад", callback_data="donate",
-                                  icon_custom_emoji_id="5893057118545646106")]
-        ])
+            [_btn("Назад", "donate", icon="5893057118545646106")]
+        ]),
     )
 
-
 @dp.message(DonateState.entering_custom_amount)
-async def process_custom_donate_amount(msg: Message, state: FSMContext):
+async def process_custom_donate(msg: Message, state: FSMContext):
     try:
         amount = int(msg.text.strip())
-        if amount < 1 or amount > 10000:
-            raise ValueError
-    except:
-        await msg.answer(
-            '<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Сумма должна быть от 1 до 10000 ⭐',
-            parse_mode="HTML"
-        )
+        assert 1 <= amount <= 10_000
+    except Exception:
+        await msg.answer(f'{E_LOSE} Сумма должна быть от 1 до 10 000 ⭐', parse_mode="HTML")
         return
     await state.clear()
     await bot.send_invoice(
         chat_id=msg.from_user.id,
         title="Поддержка разработчика",
-        description=f"Спасибо за {amount} ⭐! Это помогает развивать бота 💙",
+        description=f"Спасибо за {amount} ⭐! 💙",
         payload=f"donate_{amount}",
         currency="XTR",
         prices=[LabeledPrice(label=f"Поддержка ({amount} ⭐)", amount=amount)],
         provider_token="",
     )
 
-
-@dp.callback_query(F.data == "reset")
-async def reset_handler(cq: CallbackQuery, state: FSMContext):
-    reset_balance(cq.from_user.id)
-    await state.clear()
-    await cq.answer('Баланс сброшен до 1000 фишек!', show_alert=True)
-    await safe_edit_or_send(
-        cq,
-        f'<tg-emoji emoji-id="5345906554510012647">🔄</tg-emoji> <b>Баланс сброшен!</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>1000 фишек</b>',
-        reply_markup=main_menu_kb()
-    )
-
-
 @dp.pre_checkout_query()
-async def process_pre_checkout_query(pre_checkout_query: PreCheckoutQuery):
-    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+async def pre_checkout(pcq: PreCheckoutQuery):
+    await bot.answer_pre_checkout_query(pcq.id, ok=True)
 
-
-@dp.message(lambda msg: msg.successful_payment is not None)
-async def process_successful_payment(msg: Message):
+@dp.message(lambda m: m.successful_payment is not None)
+async def successful_payment(msg: Message):
     payment = msg.successful_payment
     if not payment.invoice_payload.startswith("donate_"):
         return
     amount = int(payment.invoice_payload.split("_")[1])
     await msg.answer(
-        f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>Спасибо за {amount} звезд!</b>\n\n'
-        f'Ваша поддержка очень важна для развития бота! 💙',
+        f'{E_PARTY} <b>Спасибо за {amount} звёзд!</b>\n\nВаша поддержка очень важна для развития бота! 💙',
         parse_mode="HTML",
-        reply_markup=main_menu_kb()
+        reply_markup=main_menu_kb(),
     )
 
 
-# ── Farm handlers ─────────────────────────────────────────────────────────────
+# ── Farm callbacks ─────────────────────────────────────────────────────────
 
 @dp.callback_query(F.data == "open_farm")
 async def open_farm(cq: CallbackQuery):
-    user_id = cq.from_user.id
-    text = farm_text(user_id)
-    await safe_edit_or_send(cq, text, reply_markup=farm_kb(user_id))
+    uid = cq.from_user.id
+    await safe_edit_or_send(cq, farm_text(uid), reply_markup=farm_kb(uid))
     await cq.answer()
-
 
 @dp.callback_query(F.data == "farm_noop")
 async def farm_noop(cq: CallbackQuery):
     await cq.answer("Недостаточно фишек!", show_alert=True)
 
-
 @dp.callback_query(F.data == "farm_buy")
 async def farm_buy_handler(cq: CallbackQuery):
-    user_id = cq.from_user.id
-    bal     = get_balance(user_id)
-    if bal < FARM_BUY_COST:
-        await cq.answer("Недостаточно фишек!", show_alert=True)
-        return
-    if get_farm(user_id):
+    uid = cq.from_user.id
+    if get_farm(uid):
         await cq.answer("У вас уже есть ферма!", show_alert=True)
         return
-
-    conn = db_connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE users SET balance = balance - %s WHERE user_id=%s",
-                        (FARM_BUY_COST, user_id))
-        conn.commit()
-    finally:
-        db_release(conn)
-    buy_farm(user_id)
-
+    new_bal = atomic_update_balance(uid, -FARM_BUY_COST)
+    if new_bal is None:
+        await cq.answer("Недостаточно фишек!", show_alert=True)
+        return
+    buy_farm(uid)
     await cq.answer("Ферма куплена! ⛏", show_alert=True)
-    text = farm_text(user_id)
-    await safe_edit_or_send(cq, text, reply_markup=farm_kb(user_id))
-
+    await safe_edit_or_send(cq, farm_text(uid), reply_markup=farm_kb(uid))
 
 @dp.callback_query(F.data == "farm_collect")
 async def farm_collect_handler(cq: CallbackQuery):
-    user_id = cq.from_user.id
-    farm    = get_farm(user_id)
+    uid  = cq.from_user.id
+    farm = get_farm(uid)
     if not farm:
         await cq.answer("У вас нет фермы!", show_alert=True)
         return
-
     pending = get_farm_pending(farm)
     if pending <= 0:
         await cq.answer("Ещё нечего собирать, подождите!", show_alert=True)
         return
-
-    conn = db_connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE users SET balance = balance + %s WHERE user_id=%s",
-                        (pending, user_id))
-        conn.commit()
-    finally:
-        db_release(conn)
-    collect_farm(user_id)
-    add_history(user_id, pending, True, game_type="farm")
-
+    atomic_update_balance(uid, pending)
+    collect_farm(uid)
+    add_history(uid, pending, True, game_type="farm")
     await cq.answer(f"Собрано +{fmt(pending)} фишек! ✅", show_alert=True)
-    text = farm_text(user_id)
-    await safe_edit_or_send(cq, text, reply_markup=farm_kb(user_id))
-
+    await safe_edit_or_send(cq, farm_text(uid), reply_markup=farm_kb(uid))
 
 @dp.callback_query(F.data == "farm_upgrade")
 async def farm_upgrade_handler(cq: CallbackQuery):
-    user_id = cq.from_user.id
-    farm    = get_farm(user_id)
+    uid  = cq.from_user.id
+    farm = get_farm(uid)
     if not farm:
         await cq.answer("У вас нет фермы!", show_alert=True)
         return
-
-    level = farm['level']
+    level = farm["level"]
     if level >= 10:
         await cq.answer("Максимальный уровень!", show_alert=True)
         return
-
-    upgrade_cost = FARM_UPGRADE_COSTS.get(level, 0)
-    bal = get_balance(user_id)
-    if bal < upgrade_cost:
+    cost    = FARM_UPGRADE_COSTS.get(level, 0)
+    new_bal = atomic_update_balance(uid, -cost)
+    if new_bal is None:
         await cq.answer("Недостаточно фишек!", show_alert=True)
         return
-
-    conn = db_connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE users SET balance = balance - %s WHERE user_id=%s",
-                        (upgrade_cost, user_id))
-        conn.commit()
-    finally:
-        db_release(conn)
-    upgrade_farm(user_id)
-
-    new_level = level + 1
-    new_name  = FARM_LEVEL_NAMES.get(new_level, f"Уровень {new_level}")
-    await cq.answer(f"Ферма улучшена до уровня {new_level} — {new_name}! 🎉", show_alert=True)
-    text = farm_text(user_id)
-    await safe_edit_or_send(cq, text, reply_markup=farm_kb(user_id))
+    upgrade_farm(uid)
+    new_name = FARM_LEVEL_NAMES.get(level + 1, f"Уровень {level + 1}")
+    await cq.answer(f"Ферма улучшена до уровня {level + 1} — {new_name}! 🎉", show_alert=True)
+    await safe_edit_or_send(cq, farm_text(uid), reply_markup=farm_kb(uid))
 
 
-# ── Roulette handlers ─────────────────────────────────────────────────────────
+# ── Roulette ───────────────────────────────────────────────────────────────
 
 @dp.callback_query(F.data == "open_roulette")
 async def open_roulette(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
     if bal <= 0:
-        await cq.answer('У вас нет фишек! Сбросьте баланс.', show_alert=True)
+        await cq.answer("У вас нет фишек! Сбросьте баланс.", show_alert=True)
         return
     await state.set_state(BetState.choosing_bet_type)
-    text = (
-        f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Европейская Рулетка</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n'
-        f'<b>Выберите тип ставки:</b>'
+    await safe_edit_or_send(
+        cq,
+        f'{E_CASINO} <b>Европейская Рулетка</b>\n{E_COIN} Баланс: <b>{format_chips(bal)}</b>\n\n<b>Выберите тип ставки:</b>',
+        reply_markup=bet_type_kb(),
     )
-    await safe_edit_or_send(cq, text, reply_markup=bet_type_kb())
-
 
 @dp.callback_query(BetState.choosing_bet_type, F.data.startswith("bet_"))
 async def choose_bet_type(cq: CallbackQuery, state: FSMContext):
@@ -1310,199 +1260,225 @@ async def choose_bet_type(cq: CallbackQuery, state: FSMContext):
         await state.set_state(BetState.choosing_amount)
         await safe_edit_or_send(
             cq,
-            '<tg-emoji emoji-id="5771851822897566479">🔡</tg-emoji> <b>Введите число от 0 до 36:</b>',
+            f'{E_ALPHA} <b>Введите число от 0 до 36:</b>',
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Назад", callback_data="back_bet_type",
-                                      icon_custom_emoji_id="5893057118545646106")]
-            ])
+                [_btn("Назад", "back_bet_type", icon="5893057118545646106")]
+            ]),
         )
         return
-
     await state.update_data(bet_type=raw)
     await state.set_state(BetState.choosing_amount)
-    bal   = get_balance(cq.from_user.id)
-    label = BET_LABELS.get(raw, raw)
-    text = (
-        f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Ставка: {label}</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n'
-        f'<b>Выберите сумму ставки:</b>'
+    bal = get_balance(cq.from_user.id)
+    await safe_edit_or_send(
+        cq,
+        f'{E_CASINO} <b>Ставка: {BET_LABELS.get(raw, raw)}</b>\n{E_COIN} Баланс: <b>{format_chips(bal)}</b>\n\n<b>Выберите сумму ставки:</b>',
+        reply_markup=bet_amount_kb(bal),
     )
-    await safe_edit_or_send(cq, text, reply_markup=bet_amount_kb(bal))
-
 
 @dp.callback_query(F.data == "back_bet_type")
 async def back_bet_type(cq: CallbackQuery, state: FSMContext):
     await state.set_state(BetState.choosing_bet_type)
     bal = get_balance(cq.from_user.id)
-    text = (
-        f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Европейская Рулетка</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n'
-        f'<b>Выберите тип ставки:</b>'
+    await safe_edit_or_send(
+        cq,
+        f'{E_CASINO} <b>Европейская Рулетка</b>\n{E_COIN} Баланс: <b>{format_chips(bal)}</b>\n\n<b>Выберите тип ставки:</b>',
+        reply_markup=bet_type_kb(),
     )
-    await safe_edit_or_send(cq, text, reply_markup=bet_type_kb())
 
+def _roulette_result_text(bet_type: str, amount: int, result: int, won: bool, mult: int, new_bal: int) -> str:
+    color = number_color(result)
+    label = BET_LABELS.get(bet_type, bet_type.replace("num_", "число "))
+    if won:
+        profit = amount * mult
+        outcome = f'{E_PARTY} <b>ПОБЕДА!</b>\n{E_COIN2} +{format_chips(profit)} (x{mult})'
+    else:
+        outcome = f'{E_LOSE} <b>Поражение.</b>\n{E_COIN} -{format_chips(amount)}'
+    text = (
+        f'{E_CASINO} <b>Шарик остановился на:</b> {color} <b>{result}</b>\n\n'
+        f'🎲 Ваша ставка: <b>{label}</b> — <b>{format_chips(amount)}</b>\n'
+        f'{outcome}\n\n'
+        f'{E_COIN} Новый баланс: <b>{format_chips(new_bal)}</b>'
+    )
+    if new_bal <= 0:
+        text += f'\n\n{E_LOSE} <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
+    return text
 
 @dp.message(BetState.choosing_amount)
-async def handle_number_input(msg: Message, state: FSMContext):
+async def handle_roulette_text_input(msg: Message, state: FSMContext):
     data = await state.get_data()
 
+    # Ввод конкретного числа
+    if data.get("bet_type") == "pending_number":
+        try:
+            n = int(msg.text.strip())
+            assert 0 <= n <= 36
+        except Exception:
+            await msg.answer("❗ Введите целое число от <b>0</b> до <b>36</b>.", parse_mode="HTML")
+            return
+        await state.update_data(bet_type=f"num_{n}")
+        bal = get_balance(msg.from_user.id)
+        await msg.answer(
+            f'{E_ALPHA} <b>Ставка на число {n}</b> (выплата x35)\n{E_COIN} Баланс: <b>{format_chips(bal)}</b>\n\n<b>Выберите сумму ставки:</b>',
+            parse_mode="HTML",
+            reply_markup=bet_amount_kb(bal),
+        )
+        return
+
+    # Ввод произвольной суммы
     if data.get("waiting_custom"):
         bal = get_balance(msg.from_user.id)
         try:
             amount = int(msg.text.strip())
             assert 1 <= amount <= bal
-        except:
+        except Exception:
             await msg.answer(f"❗ Введите целое число от <b>1</b> до <b>{bal}</b>.", parse_mode="HTML")
             return
-        await state.update_data(waiting_custom=False)
         bet_type = data.get("bet_type", "")
-        last_bets[msg.from_user.id] = {'game': 'roulette', 'bet_type': bet_type, 'amount': amount}
-
-        result = spin_wheel()
-        won    = check_bet(bet_type, result)
-        mult   = payout_multiplier(bet_type)
-        color  = number_color(result)
-        if won:
-            profit = amount * mult
-            update_balance(msg.from_user.id, profit, win=True, game_type="roulette")
-            outcome_text = (
-                f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>ПОБЕДА!</b>\n'
-                f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{format_chips(profit)} (x{mult})'
-            )
-        else:
-            update_balance(msg.from_user.id, -amount, win=False, game_type="roulette")
-            outcome_text = (
-                f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Поражение.</b>\n'
-                f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{format_chips(amount)}'
-            )
-        new_bal = get_balance(msg.from_user.id)
-        label   = BET_LABELS.get(bet_type, bet_type.replace("num_", "число "))
-        text = (
-            f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Шарик остановился на:</b> {color} <b>{result}</b>\n\n'
-            f'🎲 Ваша ставка: <b>{label}</b> — <b>{format_chips(amount)}</b>\n'
-            f'{outcome_text}\n\n'
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{format_chips(new_bal)}</b>'
+        result   = spin_wheel()
+        won      = check_bet(bet_type, result)
+        mult     = payout_multiplier(bet_type)
+        delta    = amount * mult if won else -amount
+        new_bal  = update_balance(msg.from_user.id, delta, win=won, game_type="roulette")
+        if new_bal is None:
+            await msg.answer(f'{E_LOSE} Недостаточно средств!', parse_mode="HTML")
+            return
+        await state.update_data(last_bet={"game": "roulette", "bet_type": bet_type, "amount": amount})
+        await state.set_state(None)
+        await msg.answer(
+            _roulette_result_text(bet_type, amount, result, won, mult, new_bal),
+            parse_mode="HTML",
+            reply_markup=game_result_kb("roulette", new_bal),
         )
-        await state.clear()
-        if new_bal <= 0:
-            text += f'\n\n<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
-        await msg.answer(text, parse_mode="HTML", reply_markup=game_result_kb("roulette"))
-        return
-
-    if data.get("bet_type") != "pending_number":
-        return
-    try:
-        n = int(msg.text.strip())
-        assert 0 <= n <= 36
-    except:
-        await msg.answer("❗ Введите целое число от <b>0</b> до <b>36</b>.", parse_mode="HTML")
-        return
-
-    await state.update_data(bet_type=f"num_{n}")
-    bal = get_balance(msg.from_user.id)
-    await msg.answer(
-        f'<tg-emoji emoji-id="5771851822897566479">🔡</tg-emoji> <b>Ставка на число {n}</b> (выплата x35)\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n<b>Выберите сумму ставки:</b>',
-        parse_mode="HTML",
-        reply_markup=bet_amount_kb(bal)
-    )
-
 
 @dp.callback_query(BetState.choosing_amount, F.data == "amount_custom")
-async def ask_custom_amount(cq: CallbackQuery, state: FSMContext):
+async def ask_custom_roulette_amount(cq: CallbackQuery, state: FSMContext):
     await state.update_data(waiting_custom=True)
     bal = get_balance(cq.from_user.id)
     await safe_edit_or_send(
         cq,
-        f'<tg-emoji emoji-id="5870676941614354370">🖋</tg-emoji> <b>Введите сумму ставки:</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>',
+        f'{E_PEN} <b>Введите сумму ставки:</b>\n{E_COIN} Баланс: <b>{format_chips(bal)}</b>',
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Назад", callback_data="back_bet_type",
-                                  icon_custom_emoji_id="5893057118545646106")]
-        ])
+            [_btn("Назад", "back_bet_type", icon="5893057118545646106")]
+        ]),
     )
 
-
-@dp.callback_query(BetState.choosing_amount, F.data.startswith("amount_"))
+@dp.callback_query(BetState.choosing_amount, F.data.regexp(r"^amount_\d+$"))
 async def place_bet(cq: CallbackQuery, state: FSMContext):
+    if not check_cooldown(cq.from_user.id):
+        await cq.answer("Не так быстро!", show_alert=False)
+        return
     amount   = int(cq.data.split("_")[1])
     data     = await state.get_data()
     bet_type = data.get("bet_type", "")
 
     if not bet_type or bet_type == "pending_number":
-        await cq.answer('Сначала выберите тип ставки.', show_alert=True)
+        await cq.answer("Сначала выберите тип ставки.", show_alert=True)
+        return
+    if amount <= 0:
+        await cq.answer("Сумма должна быть больше 0.", show_alert=True)
         return
 
-    bal = get_balance(cq.from_user.id)
-    if amount > bal:
-        await cq.answer('Недостаточно средств!', show_alert=True)
+    result  = spin_wheel()
+    won     = check_bet(bet_type, result)
+    mult    = payout_multiplier(bet_type)
+    delta   = amount * mult if won else -amount
+    new_bal = update_balance(cq.from_user.id, delta, win=won, game_type="roulette")
+    if new_bal is None:
+        await cq.answer("Недостаточно средств!", show_alert=True)
         return
 
-    last_bets[cq.from_user.id] = {'game': 'roulette', 'bet_type': bet_type, 'amount': amount}
-    result = spin_wheel()
-    color  = number_color(result)
-    won    = check_bet(bet_type, result)
-    mult   = payout_multiplier(bet_type)
-
-    if won:
-        profit = amount * mult
-        update_balance(cq.from_user.id, profit, win=True, game_type="roulette")
-        outcome_text = (
-            f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>ПОБЕДА!</b>\n'
-            f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{format_chips(profit)} (x{mult})'
-        )
-    else:
-        update_balance(cq.from_user.id, -amount, win=False, game_type="roulette")
-        outcome_text = (
-            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Поражение.</b>\n'
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{format_chips(amount)}'
-        )
-
-    new_bal = get_balance(cq.from_user.id)
-    label   = BET_LABELS.get(bet_type, bet_type.replace("num_", "число "))
-    text = (
-        f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Шарик остановился на:</b> {color} <b>{result}</b>\n\n'
-        f'🎲 Ваша ставка: <b>{label}</b> — <b>{format_chips(amount)}</b>\n'
-        f'{outcome_text}\n\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{format_chips(new_bal)}</b>'
+    await state.update_data(last_bet={"game": "roulette", "bet_type": bet_type, "amount": amount})
+    await state.set_state(None)
+    await safe_edit_or_send(
+        cq,
+        _roulette_result_text(bet_type, amount, result, won, mult, new_bal),
+        reply_markup=game_result_kb("roulette", new_bal),
     )
-    await state.clear()
-    if new_bal <= 0:
-        text += f'\n\n<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
-    await safe_edit_or_send(cq, text, reply_markup=game_result_kb("roulette"))
+
+@dp.callback_query(F.data == "repeat_roulette")
+async def repeat_roulette(cq: CallbackQuery, state: FSMContext):
+    if not check_cooldown(cq.from_user.id):
+        await cq.answer("Не так быстро!", show_alert=False)
+        return
+    data = await state.get_data()
+    last = data.get("last_bet")
+    if not last or last.get("game") != "roulette":
+        await cq.answer("Нет сохранённой ставки.", show_alert=False)
+        return
+    bet_type, amount = last["bet_type"], last["amount"]
+    result  = spin_wheel()
+    won     = check_bet(bet_type, result)
+    mult    = payout_multiplier(bet_type)
+    delta   = amount * mult if won else -amount
+    new_bal = update_balance(cq.from_user.id, delta, win=won, game_type="roulette")
+    if new_bal is None:
+        await cq.answer(f"Недостаточно фишек! Нужно {amount}.", show_alert=True)
+        return
+    await safe_edit_or_send(
+        cq,
+        _roulette_result_text(bet_type, amount, result, won, mult, new_bal),
+        reply_markup=game_result_kb("roulette", new_bal),
+    )
 
 
-# ── Coin handlers ─────────────────────────────────────────────────────────────
+# ── Coin ───────────────────────────────────────────────────────────────────
 
 @dp.callback_query(F.data == "open_coin")
 async def open_coin(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
     if bal <= 0:
-        await cq.answer('У вас нет фишек! Сбросьте баланс.', show_alert=True)
+        await cq.answer("У вас нет фишек! Сбросьте баланс.", show_alert=True)
         return
     await state.set_state(CoinState.choosing_side)
-    text = (
-        f'<tg-emoji emoji-id="5774585885154131652">🪙</tg-emoji> <b>Орёл или Решка</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n'
-        f'<b>Выберите сторону фишки:</b>'
+    await safe_edit_or_send(
+        cq,
+        f'🪙 <b>Орёл или Решка</b>\n{E_COIN} Баланс: <b>{format_chips(bal)}</b>\n\n<b>Выберите сторону:</b>',
+        reply_markup=coin_side_kb(),
     )
-    await safe_edit_or_send(cq, text, reply_markup=coin_side_kb())
-
 
 @dp.callback_query(CoinState.choosing_side, F.data.startswith("coin_"))
 async def choose_coin_side(cq: CallbackQuery, state: FSMContext):
-    side_raw   = cq.data.split("_")[1]
-    side_label = "Орёл" if side_raw == "heads" else "Решка"
-    await state.update_data(coin_choice=side_raw)
+    side  = cq.data.split("_")[1]
+    label = "Орёл" if side == "heads" else "Решка"
+    await state.update_data(coin_choice=side)
     await state.set_state(CoinState.choosing_amount)
     bal = get_balance(cq.from_user.id)
-    text = (
-        f'<tg-emoji emoji-id="5774585885154131652">🪙</tg-emoji> <b>Ставка: {side_label}</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n'
-        f'<b>Выберите сумму ставки:</b>'
+    await safe_edit_or_send(
+        cq,
+        f'🪙 <b>Ставка: {label}</b>\n{E_COIN} Баланс: <b>{format_chips(bal)}</b>\n\n<b>Выберите сумму ставки:</b>',
+        reply_markup=bet_amount_kb(bal, back="back_main"),
     )
-    await safe_edit_or_send(cq, text, reply_markup=bet_amount_kb(bal))
 
+def _coin_result_text(side_label: str, result_label: str, amount: int, won: bool, new_bal: int) -> str:
+    outcome = (
+        f'{E_PARTY} <b>ПОБЕДА!</b>\n{E_COIN2} +{format_chips(amount * 2)} (x2)'
+        if won else
+        f'{E_LOSE} <b>Поражение.</b>\n{E_COIN} -{format_chips(amount)}'
+    )
+    text = (
+        f'🪙 <b>Результат:</b> {result_label}\n\n'
+        f'🎲 Ваша ставка: <b>{side_label}</b> — <b>{format_chips(amount)}</b>\n'
+        f'{outcome}\n\n'
+        f'{E_COIN} Новый баланс: <b>{format_chips(new_bal)}</b>'
+    )
+    if new_bal <= 0:
+        text += f'\n\n{E_LOSE} <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
+    return text
+
+async def _resolve_coin(uid: int, choice: str, amount: int, state: FSMContext) -> tuple[str, int] | None:
+    if amount <= 0:
+        return None
+    result  = flip_coin()
+    won     = choice == result
+    delta   = amount if won else -amount
+    new_bal = update_balance(uid, delta, win=won, game_type="coin")
+    if new_bal is None:
+        return None
+    await state.update_data(last_bet={"game": "coin", "choice": choice, "amount": amount})
+    await state.set_state(None)
+    side_label   = "Орёл" if choice == "heads" else "Решка"
+    result_label = "Орёл" if result == "heads" else "Решка"
+    return _coin_result_text(side_label, result_label, amount, won, new_bal), new_bal
 
 @dp.callback_query(CoinState.choosing_amount, F.data == "amount_custom")
 async def ask_custom_coin_amount(cq: CallbackQuery, state: FSMContext):
@@ -1510,522 +1486,85 @@ async def ask_custom_coin_amount(cq: CallbackQuery, state: FSMContext):
     bal = get_balance(cq.from_user.id)
     await safe_edit_or_send(
         cq,
-        f'<tg-emoji emoji-id="5870676941614354370">🖋</tg-emoji> <b>Введите сумму ставки:</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>',
+        f'{E_PEN} <b>Введите сумму ставки:</b>\n{E_COIN} Баланс: <b>{format_chips(bal)}</b>',
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Назад", callback_data="back_main",
-                                  icon_custom_emoji_id="5893057118545646106")]
-        ])
+            [_btn("Назад", "back_main", icon="5893057118545646106")]
+        ]),
     )
-
 
 @dp.message(CoinState.choosing_amount)
 async def handle_coin_amount_input(msg: Message, state: FSMContext):
-    data        = await state.get_data()
-    coin_choice = data.get("coin_choice", "")
+    data = await state.get_data()
+    if not data.get("waiting_custom"):
+        return
+    bal  = get_balance(msg.from_user.id)
+    try:
+        amount = int(msg.text.strip())
+        assert 1 <= amount <= bal
+    except Exception:
+        await msg.answer(f"❗ Введите целое число от <b>1</b> до <b>{bal}</b>.", parse_mode="HTML")
+        return
+    res = await _resolve_coin(msg.from_user.id, data["coin_choice"], amount, state)
+    if res is None:
+        await msg.answer(f'{E_LOSE} Недостаточно средств!', parse_mode="HTML")
+        return
+    text, new_bal = res
+    await msg.answer(text, parse_mode="HTML", reply_markup=game_result_kb("coin", new_bal))
 
-    if data.get("waiting_custom"):
-        bal = get_balance(msg.from_user.id)
-        try:
-            amount = int(msg.text.strip())
-            assert 1 <= amount <= bal
-        except:
-            await msg.answer(f"❗ Введите целое число от <b>1</b> до <b>{bal}</b>.", parse_mode="HTML")
-            return
-
-        last_bets[msg.from_user.id] = {'game': 'coin', 'choice': coin_choice, 'amount': amount}
-        result = flip_coin()
-        won    = check_coin_bet(coin_choice, result)
-
-        side_label   = "Орёл" if coin_choice == "heads" else "Решка"
-        result_label = "Орёл" if result == "heads" else "Решка"
-
-        if won:
-            profit = amount * 2
-            update_balance(msg.from_user.id, profit, win=True, game_type="coin")
-            outcome_text = (
-                f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>ПОБЕДА!</b>\n'
-                f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{format_chips(profit)} (x2)'
-            )
-        else:
-            update_balance(msg.from_user.id, -amount, win=False, game_type="coin")
-            outcome_text = (
-                f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Поражение.</b>\n'
-                f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{format_chips(amount)}'
-            )
-
-        new_bal = get_balance(msg.from_user.id)
-        text = (
-            f'<tg-emoji emoji-id="5774585885154131652">🪙</tg-emoji> <b>Результат:</b> {result_label}\n\n'
-            f'🎲 Ваша ставка: <b>{side_label}</b> — <b>{format_chips(amount)}</b>\n'
-            f'{outcome_text}\n\n'
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{format_chips(new_bal)}</b>'
-        )
-        await state.clear()
-        if new_bal <= 0:
-            text += f'\n\n<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
-        await msg.answer(text, parse_mode="HTML", reply_markup=game_result_kb("coin"))
-
-
-@dp.callback_query(CoinState.choosing_amount, F.data.startswith("amount_"))
+@dp.callback_query(CoinState.choosing_amount, F.data.regexp(r"^amount_\d+$"))
 async def place_coin_bet(cq: CallbackQuery, state: FSMContext):
-    amount      = int(cq.data.split("_")[1])
-    data        = await state.get_data()
-    coin_choice = data.get("coin_choice", "")
-
-    if not coin_choice:
-        await cq.answer('Сначала выберите сторону фишки.', show_alert=True)
+    if not check_cooldown(cq.from_user.id):
+        await cq.answer("Не так быстро!", show_alert=False)
         return
-
-    bal = get_balance(cq.from_user.id)
-    if amount > bal:
-        await cq.answer('Недостаточно средств!', show_alert=True)
+    amount = int(cq.data.split("_")[1])
+    data   = await state.get_data()
+    choice = data.get("coin_choice", "")
+    if not choice:
+        await cq.answer("Сначала выберите сторону.", show_alert=True)
         return
-
-    last_bets[cq.from_user.id] = {'game': 'coin', 'choice': coin_choice, 'amount': amount}
-    result = flip_coin()
-    won    = check_coin_bet(coin_choice, result)
-
-    side_label   = "Орёл" if coin_choice == "heads" else "Решка"
-    result_label = "Орёл" if result == "heads" else "Решка"
-
-    if won:
-        profit = amount * 2
-        update_balance(cq.from_user.id, profit, win=True, game_type="coin")
-        outcome_text = (
-            f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>ПОБЕДА!</b>\n'
-            f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{format_chips(profit)} (x2)'
-        )
-    else:
-        update_balance(cq.from_user.id, -amount, win=False, game_type="coin")
-        outcome_text = (
-            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Поражение.</b>\n'
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{format_chips(amount)}'
-        )
-
-    new_bal = get_balance(cq.from_user.id)
-    text = (
-        f'<tg-emoji emoji-id="5774585885154131652">🪙</tg-emoji> <b>Результат:</b> {result_label}\n\n'
-        f'🎲 Ваша ставка: <b>{side_label}</b> — <b>{format_chips(amount)}</b>\n'
-        f'{outcome_text}\n\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{format_chips(new_bal)}</b>'
-    )
-    await state.clear()
-    if new_bal <= 0:
-        text += f'\n\n<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
-    await safe_edit_or_send(cq, text, reply_markup=game_result_kb("coin"))
-
-
-@dp.callback_query(F.data == "repeat_roulette")
-async def repeat_roulette(cq: CallbackQuery, state: FSMContext):
-    user_id = cq.from_user.id
-    if user_id not in last_bets or last_bets[user_id].get('game') != 'roulette':
-        await cq.answer("Нет сохраненной ставки, выберите новую.", show_alert=False)
+    if amount <= 0:
+        await cq.answer("Сумма должна быть больше 0.", show_alert=True)
         return
-
-    bet_data = last_bets[user_id]
-    bet_type = bet_data.get('bet_type')
-    amount   = bet_data.get('amount')
-    bal      = get_balance(user_id)
-
-    if amount > bal:
-        await cq.answer(f'Недостаточно фишек! Нужно {amount}, а у вас {bal}.', show_alert=True)
+    res = await _resolve_coin(cq.from_user.id, choice, amount, state)
+    if res is None:
+        await cq.answer("Недостаточно средств!", show_alert=True)
         return
-
-    result = spin_wheel()
-    color  = number_color(result)
-    won    = check_bet(bet_type, result)
-    mult   = payout_multiplier(bet_type)
-
-    if won:
-        profit = amount * mult
-        update_balance(user_id, profit, win=True, game_type="roulette")
-        outcome_text = (
-            f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>ПОБЕДА!</b>\n'
-            f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{format_chips(profit)} (x{mult})'
-        )
-    else:
-        update_balance(user_id, -amount, win=False, game_type="roulette")
-        outcome_text = (
-            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Поражение.</b>\n'
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{format_chips(amount)}'
-        )
-
-    new_bal = get_balance(user_id)
-    label   = BET_LABELS.get(bet_type, bet_type.replace("num_", "число "))
-    text = (
-        f'<tg-emoji emoji-id="5258882890059091157">🎰</tg-emoji> <b>Шарик остановился на:</b> {color} <b>{result}</b>\n\n'
-        f'🎲 Ваша ставка: <b>{label}</b> — <b>{format_chips(amount)}</b>\n'
-        f'{outcome_text}\n\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{format_chips(new_bal)}</b>'
-    )
-    if new_bal <= 0:
-        text += f'\n\n<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
-    await safe_edit_or_send(cq, text, reply_markup=game_result_kb("roulette"))
-
+    text, new_bal = res
+    await safe_edit_or_send(cq, text, reply_markup=game_result_kb("coin", new_bal))
 
 @dp.callback_query(F.data == "repeat_coin")
 async def repeat_coin(cq: CallbackQuery, state: FSMContext):
-    user_id = cq.from_user.id
-    if user_id not in last_bets or last_bets[user_id].get('game') != 'coin':
-        await cq.answer("Нет сохраненной ставки, выберите новую.", show_alert=False)
+    if not check_cooldown(cq.from_user.id):
+        await cq.answer("Не так быстро!", show_alert=False)
         return
-
-    bet_data    = last_bets[user_id]
-    coin_choice = bet_data.get('choice')
-    amount      = bet_data.get('amount')
-    bal         = get_balance(user_id)
-
-    if amount > bal:
-        await cq.answer(f'Недостаточно фишек! Нужно {amount}, а у вас {bal}.', show_alert=True)
+    data = await state.get_data()
+    last = data.get("last_bet")
+    if not last or last.get("game") != "coin":
+        await cq.answer("Нет сохранённой ставки.", show_alert=False)
         return
-
-    result = flip_coin()
-    won    = check_coin_bet(coin_choice, result)
-
-    side_label   = "Орёл" if coin_choice == "heads" else "Решка"
-    result_label = "Орёл" if result == "heads" else "Решка"
-
-    if won:
-        profit = amount * 2
-        update_balance(user_id, profit, win=True, game_type="coin")
-        outcome_text = (
-            f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> <b>ПОБЕДА!</b>\n'
-            f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> +{format_chips(profit)} (x2)'
-        )
-    else:
-        update_balance(user_id, -amount, win=False, game_type="coin")
-        outcome_text = (
-            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Поражение.</b>\n'
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> -{format_chips(amount)}'
-        )
-
-    new_bal = get_balance(user_id)
-    text = (
-        f'<tg-emoji emoji-id="5774585885154131652">🪙</tg-emoji> <b>Результат:</b> {result_label}\n\n'
-        f'🎲 Ваша ставка: <b>{side_label}</b> — <b>{format_chips(amount)}</b>\n'
-        f'{outcome_text}\n\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{format_chips(new_bal)}</b>'
-    )
-    if new_bal <= 0:
-        text += f'\n\n<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
-    await safe_edit_or_send(cq, text, reply_markup=game_result_kb("coin"))
-
-
-# ── Admin handlers ────────────────────────────────────────────────────────────
-
-@dp.message(Command("admin"))
-async def cmd_admin(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
-        await msg.answer(
-            '<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> У вас нет доступа к админ-панели',
-            parse_mode="HTML"
-        )
+    res = await _resolve_coin(cq.from_user.id, last["choice"], last["amount"], state)
+    if res is None:
+        await cq.answer(f"Недостаточно фишек! Нужно {last['amount']}.", show_alert=True)
         return
-    await state.set_state(AdminState.choosing_action)
-    text = (
-        '<tg-emoji emoji-id="5870982283724328568">⚙️</tg-emoji> <b>Админ-панель</b>\n\n'
-        'Выберите действие:'
-    )
-    await msg.answer(text, parse_mode="HTML", reply_markup=admin_menu_kb())
+    text, new_bal = res
+    await safe_edit_or_send(cq, text, reply_markup=game_result_kb("coin", new_bal))
 
 
-@dp.callback_query(F.data == "admin_users")
-async def show_users_list(cq: CallbackQuery, state: FSMContext):
-    if cq.from_user.id != ADMIN_ID:
-        await cq.answer('Только админ может это делать', show_alert=True)
-        return
-    await state.set_state(AdminState.choosing_user)
-    users = get_all_users_full()
-    text = (
-        f'<tg-emoji emoji-id="5870772616305839506">👥</tg-emoji> <b>Список пользователей:</b>\n\n'
-        f'Всего: {len(users)} пользователей\n\n'
-        f'Выберите пользователя для редактирования:'
-    )
-    await safe_edit_or_send(cq, text, reply_markup=users_list_kb(users, 0))
+# ── Rocket ─────────────────────────────────────────────────────────────────
 
-
-@dp.callback_query(F.data.startswith("admin_users_page_"))
-async def paginate_users(cq: CallbackQuery, state: FSMContext):
-    if cq.from_user.id != ADMIN_ID:
-        return
-    page  = int(cq.data.split("_")[-1])
-    users = get_all_users_full()
-    text = (
-        f'<tg-emoji emoji-id="5870772616305839506">👥</tg-emoji> <b>Список пользователей:</b>\n\n'
-        f'Всего: {len(users)} пользователей\n\n'
-        f'Выберите пользователя для редактирования:'
-    )
-    await safe_edit_or_send(cq, text, reply_markup=users_list_kb(users, page))
-
-
-@dp.callback_query(F.data.startswith("admin_edit_user_"))
-async def edit_user_menu(cq: CallbackQuery, state: FSMContext):
-    if cq.from_user.id != ADMIN_ID:
-        return
-    user_id = int(cq.data.split("_")[-1])
-    row     = get_user(user_id)
-    if not row:
-        await cq.answer('Пользователь не найден', show_alert=True)
-        return
-    _, username, balance, wins, losses, *_ = row
-    text = (
-        f'<tg-emoji emoji-id="5870994129244131212">👤</tg-emoji> <b>Профиль пользователя:</b>\n\n'
-        f'ID: <code>{user_id}</code>\n'
-        f'Имя: <b>{username or "Неизвестно"}</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(balance)}</b>\n'
-        f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Побед: <b>{wins}</b>\n'
-        f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Поражений: <b>{losses}</b>\n\n'
-        f'Выберите действие:'
-    )
-    await state.update_data(admin_user_id=user_id)
-    await safe_edit_or_send(cq, text, reply_markup=edit_user_kb(user_id))
-
-
-@dp.callback_query(F.data.startswith("admin_user_history_"))
-async def admin_show_user_history(cq: CallbackQuery):
-    if cq.from_user.id != ADMIN_ID:
-        return
-    user_id  = int(cq.data.split("_")[-1])
-    row      = get_user(user_id)
-    if not row:
-        await cq.answer('Пользователь не найден', show_alert=True)
-        return
-    username = row[1]
-    history  = get_history(user_id, limit=15)
-
-    if not history:
-        text = (
-            f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> '
-            f'<b>История ставок {username or f"ID {user_id}"}:</b>\n\nНет истории ставок'
-        )
-    else:
-        text = (
-            f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> '
-            f'<b>История ставок {username or f"ID {user_id}"} (последние 15):</b>\n\n'
-        )
-        for entry in history:
-            status_emoji = (
-                f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji>'
-                if entry['is_win'] else
-                f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji>'
-            )
-            game_names = {"coin": "Монета", "rocket": "Ракета", "minesweeper": "Сапер",
-                          "admin_topup": "Пополнение от админа", "farm": "Ферма"}
-            game_name = game_names.get(entry['game_type'], "Рулетка")
-            sign = '+' if entry['is_win'] else '-'
-            text += f'{status_emoji} {sign}{entry["amount"]} — {game_name}\n'
-
-    stats = get_user_history_stats(user_id)
-    if stats and (stats['win_count'] or stats['lose_count']):
-        total_won  = stats['total_won']  or 0
-        total_lost = stats['total_lost'] or 0
-        text += f'\n<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Выигрыши: <b>+{total_won}</b>\n'
-        text += f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Проигрыши: <b>-{total_lost}</b>\n'
-        net = total_won - total_lost
-        if net > 0:
-            text += f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Итог: <b>+{net}</b>'
-        elif net < 0:
-            text += f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Итог: <b>{net}</b>'
-        else:
-            text += f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Итог: <b>0</b>'
-
-    await safe_edit_or_send(cq, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад к пользователю", callback_data=f"admin_edit_user_{user_id}",
-                              icon_custom_emoji_id="5893057118545646106")],
-    ]))
-
-
-@dp.callback_query(F.data.startswith("admin_edit_balance_"))
-async def ask_new_balance(cq: CallbackQuery, state: FSMContext):
-    if cq.from_user.id != ADMIN_ID:
-        return
-    user_id = int(cq.data.split("_")[-1])
-    await state.update_data(admin_user_id=user_id)
-    await state.set_state(AdminState.editing_balance)
-    current_balance = get_balance(user_id)
-    text = (
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Текущий баланс: <b>{format_chips(current_balance)}</b>\n\n'
-        f'Введите сумму которую хотите <b>добавить</b>:\n'
-    )
-    await safe_edit_or_send(cq, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад", callback_data="admin_users_back",
-                              icon_custom_emoji_id="5893057118545646106")]
-    ]))
-
-
-@dp.message(AdminState.editing_balance)
-async def process_new_balance(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
-        return
-    try:
-        new_balance = int(msg.text.strip())
-        assert new_balance >= 0
-    except:
-        await msg.answer(
-            '<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Введите корректное число (больше или равно 0)',
-            parse_mode="HTML"
-        )
-        return
-
-    data    = await state.get_data()
-    user_id = data.get("admin_user_id")
-
-    old_balance = get_balance(user_id)
-    new_total   = old_balance + new_balance
-    set_balance(user_id, new_total)
-    add_history(user_id, new_balance, True, game_type="admin_topup")
-
-    user     = get_user(user_id)
-    _, username, *_ = user
-
-    text = (
-        f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> <b>Баланс обновлён!</b>\n\n'
-        f'<tg-emoji emoji-id="5870994129244131212">👤</tg-emoji> Пользователь: <b>{username or "Неизвестно"}</b> (ID: {user_id})\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Было: <b>{format_chips(old_balance)}</b>\n'
-        f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> Добавлено: <b>+{format_chips(new_balance)}</b>\n'
-        f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Итого: <b>{format_chips(new_total)}</b>'
-    )
-    await state.clear()
-    await msg.answer(text, parse_mode="HTML", reply_markup=admin_menu_kb())
-
-    try:
-        await bot.send_message(
-            user_id,
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> <b>Баланс пополнен!</b>\n\n'
-            f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> Добавлено: <b>+{format_chips(new_balance)}</b>\n'
-            f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Текущий баланс: <b>{format_chips(new_total)}</b>',
-            parse_mode="HTML"
-        )
-    except Exception:
-        pass
-
-
-@dp.callback_query(F.data == "admin_broadcast")
-async def broadcast_menu(cq: CallbackQuery, state: FSMContext):
-    if cq.from_user.id != ADMIN_ID:
-        await cq.answer('Только админ может это делать', show_alert=True)
-        return
-
-    users = get_all_users_full()
-    text = (
-        f'<tg-emoji emoji-id="6039422865189638057">📣</tg-emoji> <b>Рассылка сообщений</b>\n\n'
-        f'Адресатов: {len(users)} пользователей\n\n'
-        f'Введите сообщение, которое нужно отправить всем пользователям:\n\n'
-        f'<i>Поддерживает HTML форматирование</i>'
-    )
-    await state.set_state(AdminState.sending_broadcast)
-    await safe_edit_or_send(cq, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Отмена", callback_data="admin_back",
-                              icon_custom_emoji_id="5870657884844462243")]
-    ]))
-
-
-@dp.message(AdminState.sending_broadcast)
-async def process_broadcast(msg: Message, state: FSMContext):
-    if msg.from_user.id != ADMIN_ID:
-        return
-
-    broadcast_text = msg.text
-    users = get_all_users_full()
-
-    success_count = 0
-    fail_count    = 0
-    for user in users:
-        try:
-            await bot.send_message(user['user_id'], broadcast_text, parse_mode="HTML")
-            success_count += 1
-        except Exception:
-            fail_count += 1
-
-    text = (
-        f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> <b>Рассылка завершена!</b>\n\n'
-        f'Успешно отправлено: <b>{success_count}</b>\n'
-        f'Ошибок: <b>{fail_count}</b>'
-    )
-    await state.clear()
-    await msg.answer(text, parse_mode="HTML", reply_markup=admin_menu_kb())
-
-
-@dp.callback_query(F.data == "admin_back")
-async def admin_back_to_menu(cq: CallbackQuery, state: FSMContext):
-    if cq.from_user.id != ADMIN_ID:
-        return
-    await state.clear()
-    await state.set_state(AdminState.choosing_action)
-    text = (
-        '<tg-emoji emoji-id="5870982283724328568">⚙️</tg-emoji> <b>Админ-панель</b>\n\n'
-        'Выберите действие:'
-    )
-    await safe_edit_or_send(cq, text, reply_markup=admin_menu_kb())
-
-
-@dp.callback_query(F.data == "admin_clear_history")
-async def admin_clear_history(cq: CallbackQuery):
-    if cq.from_user.id != ADMIN_ID:
-        return
-    clear_all_history()
-    text = '<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> <b>История ставок очищена!</b>\n\nВсе записи из таблицы history удалены.'
-    await safe_edit_or_send(cq, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Назад в админ-панель", callback_data="admin_back",
-                              icon_custom_emoji_id="5893057118545646106")],
-    ]))
-    await cq.answer("История очищена", show_alert=True)
-
-
-@dp.callback_query(F.data == "admin_users_back")
-async def admin_back_to_users(cq: CallbackQuery, state: FSMContext):
-    if cq.from_user.id != ADMIN_ID:
-        return
-    await state.set_state(AdminState.choosing_user)
-    users = get_all_users_full()
-    text = (
-        f'<tg-emoji emoji-id="5870772616305839506">👥</tg-emoji> <b>Список пользователей:</b>\n\n'
-        f'Всего: {len(users)} пользователей\n\n'
-        f'Выберите пользователя для редактирования:'
-    )
-    await safe_edit_or_send(cq, text, reply_markup=users_list_kb(users, 0))
-
-
-# ── Rocket handlers ───────────────────────────────────────────────────────────
-
-def generate_crash_point() -> float:
-    r = random.random()
-    if r < 0.40:   return round(random.uniform(1.0,  1.5),  2)
-    elif r < 0.65: return round(random.uniform(1.5,  2.5),  2)
-    elif r < 0.80: return round(random.uniform(2.5,  4.0),  2)
-    elif r < 0.92: return round(random.uniform(4.0,  8.0),  2)
-    else:          return round(random.uniform(8.0, 20.0),  2)
-
-def next_multiplier(current: float) -> float:
-    return round(current + round(random.uniform(0.1, 0.6), 2), 2)
-
-def _rocket_text(amount: int, multiplier: float) -> str:
-    potential = int(amount * multiplier)
-    stars     = "⭐" * min(int(multiplier), 10)
-    return (
-        f'<tg-emoji emoji-id="5373139891223741704">🚀</tg-emoji> <b>Ракета летит!</b>\n\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ставка: <b>{format_chips(amount)}</b>\n'
-        f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Множитель: <b>x{multiplier:.2f}</b>  {stars}\n'
-        f'<tg-emoji emoji-id="5879814368572478751">🏧</tg-emoji> Можно забрать: <b>{format_chips(potential)}</b>\n\n'
-        f'Нажми <b>«Дальше»</b> чтобы лететь выше\n'
-        f'или <b>«Забрать»</b> чтобы зафиксировать!'
-    )
-
-async def _start_rocket_game(message, state: FSMContext, user_id: int, amount: int, is_message: bool = False):
-    crash_point = generate_crash_point()
+async def _start_rocket(target, state: FSMContext, uid: int, amount: int, is_msg: bool = False):
+    crash = generate_crash_point()
     await state.set_state(RocketState.in_game)
     await state.update_data(rocket_amount=amount, rocket_multiplier=1.0,
-                             rocket_crash=crash_point, waiting_custom=False)
+                             rocket_crash=crash, waiting_custom=False)
     text = _rocket_text(amount, 1.0)
-    if is_message:
-        await message.answer(text, parse_mode="HTML", reply_markup=rocket_game_kb())
+    if is_msg:
+        await target.answer(text, parse_mode="HTML", reply_markup=rocket_game_kb())
     else:
         try:
-            await message.edit_text(text, parse_mode="HTML", reply_markup=rocket_game_kb())
+            await target.edit_text(text, parse_mode="HTML", reply_markup=rocket_game_kb())
         except Exception:
-            await message.answer(text, parse_mode="HTML", reply_markup=rocket_game_kb())
-
+            await target.answer(text, parse_mode="HTML", reply_markup=rocket_game_kb())
 
 @dp.callback_query(F.data == "open_rocket")
 async def open_rocket(cq: CallbackQuery, state: FSMContext):
@@ -2034,44 +1573,40 @@ async def open_rocket(cq: CallbackQuery, state: FSMContext):
         await cq.answer("У вас нет фишек! Сбросьте баланс.", show_alert=True)
         return
     await state.set_state(RocketState.choosing_amount)
-    text = (
-        f'<tg-emoji emoji-id="5373139891223741704">🚀</tg-emoji> <b>Ракета</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n'
-        f'Ракета взлетает и множитель растёт.\n'
-        f'Нажми <b>«Дальше»</b> чтобы продолжить лететь,\n'
-        f'или <b>«Забрать»</b> чтобы зафиксировать выигрыш.\n'
-        f'Если ракета взорвётся — ставка сгорает!\n\n'
-        f'<b>Выбери сумму ставки:</b>'
+    await safe_edit_or_send(
+        cq,
+        f'{E_ROCKET} <b>Ракета</b>\n{E_COIN} Баланс: <b>{format_chips(bal)}</b>\n\n'
+        'Ракета взлетает и множитель растёт.\n'
+        'Нажми <b>«Дальше»</b> чтобы продолжить, или <b>«Забрать»</b> чтобы зафиксировать.\n'
+        'Если ракета взорвётся — ставка сгорает!\n\n<b>Выбери сумму ставки:</b>',
+        reply_markup=rocket_amount_kb(bal),
     )
-    await safe_edit_or_send(cq, text, reply_markup=rocket_amount_kb(bal))
-
 
 @dp.callback_query(RocketState.choosing_amount, F.data == "rocket_amount_custom")
-async def rocket_amount_custom_cb(cq: CallbackQuery, state: FSMContext):
+async def rocket_custom_cb(cq: CallbackQuery, state: FSMContext):
     await state.update_data(waiting_custom=True)
     bal = get_balance(cq.from_user.id)
     await safe_edit_or_send(
         cq,
-        f'<tg-emoji emoji-id="5870676941614354370">🖋</tg-emoji> <b>Введите сумму ставки:</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>',
+        f'{E_PEN} <b>Введите сумму ставки:</b>\n{E_COIN} Баланс: <b>{format_chips(bal)}</b>',
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Назад", callback_data="open_rocket",
-                                  icon_custom_emoji_id="5893057118545646106")]
-        ])
+            [_btn("Назад", "open_rocket", icon="5893057118545646106")]
+        ]),
     )
     await cq.answer()
 
-
-@dp.callback_query(RocketState.choosing_amount, F.data.startswith("rocket_amount_"))
+@dp.callback_query(RocketState.choosing_amount, F.data.regexp(r"^rocket_amount_\d+$"))
 async def rocket_set_amount(cq: CallbackQuery, state: FSMContext):
     amount = int(cq.data.replace("rocket_amount_", ""))
-    bal    = get_balance(cq.from_user.id)
+    if amount <= 0:
+        await cq.answer("Сумма должна быть больше 0.", show_alert=True)
+        return
+    bal = get_balance(cq.from_user.id)
     if amount > bal:
         await cq.answer("Недостаточно средств!", show_alert=True)
         return
-    await _start_rocket_game(cq.message, state, cq.from_user.id, amount)
+    await _start_rocket(cq.message, state, cq.from_user.id, amount)
     await cq.answer()
-
 
 @dp.message(RocketState.choosing_amount)
 async def rocket_custom_amount(msg: Message, state: FSMContext):
@@ -2082,109 +1617,80 @@ async def rocket_custom_amount(msg: Message, state: FSMContext):
     try:
         amount = int(msg.text.strip())
         assert 1 <= amount <= bal
-    except:
+    except Exception:
         await msg.answer(f"❗ Введите целое число от <b>1</b> до <b>{bal}</b>.", parse_mode="HTML")
         return
-    await _start_rocket_game(msg, state, msg.from_user.id, amount, is_message=True)
-
+    await _start_rocket(msg, state, msg.from_user.id, amount, is_msg=True)
 
 @dp.callback_query(RocketState.in_game, F.data == "rocket_next")
 async def rocket_next(cq: CallbackQuery, state: FSMContext):
-    user_id = cq.from_user.id
-    data    = await state.get_data()
-    amount      = data.get("rocket_amount", 0)
-    multiplier  = data.get("rocket_multiplier", 1.0)
-    crash_point = data.get("rocket_crash", 1.0)
+    if not check_cooldown(cq.from_user.id, 0.5):
+        await cq.answer()
+        return
+    data        = await state.get_data()
+    amount      = data["rocket_amount"]
+    multiplier  = data["rocket_multiplier"]
+    crash_point = data["rocket_crash"]
+    new_mult    = next_multiplier(multiplier)
 
-    new_multiplier = next_multiplier(multiplier)
-
-    if new_multiplier >= crash_point:
-        update_balance(user_id, -amount, win=False, game_type="rocket")
+    if new_mult >= crash_point:
+        new_bal = update_balance(cq.from_user.id, -amount, win=False, game_type="rocket")
+        if new_bal is None:
+            new_bal = get_balance(cq.from_user.id)
         await state.clear()
         text = (
-            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>РАКЕТА ВЗОРВАЛАСЬ!</b>\n\n'
-            f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Множитель дошёл до: <b>x{crash_point:.2f}</b>\n'
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ставка: <b>{format_chips(amount)}</b>\n'
-            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Вы потеряли: <b>-{format_chips(amount)}</b>\n\n'
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{format_chips(get_balance(user_id))}</b>'
+            f'{E_LOSE} <b>РАКЕТА ВЗОРВАЛАСЬ!</b>\n\n'
+            f'{E_CHART} Множитель дошёл до: <b>x{crash_point:.2f}</b>\n'
+            f'{E_COIN} Ставка: <b>{format_chips(amount)}</b>\n'
+            f'{E_LOSE} Потеряно: <b>-{format_chips(amount)}</b>\n\n'
+            f'{E_COIN} Новый баланс: <b>{format_chips(new_bal)}</b>'
         )
         await safe_edit_or_send(cq, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Сыграть снова", callback_data="open_rocket",
-                                  icon_custom_emoji_id="5373139891223741704")],
-            [InlineKeyboardButton(text="В меню", callback_data="back_main",
-                                  icon_custom_emoji_id="5893057118545646106")],
+            [_btn("Сыграть снова", "open_rocket", icon="5373139891223741704")],
+            [_btn("В меню",        "back_main",   icon="5893057118545646106")],
         ]))
     else:
-        await state.update_data(rocket_multiplier=new_multiplier)
+        await state.update_data(rocket_multiplier=new_mult)
         try:
-            await cq.message.edit_text(_rocket_text(amount, new_multiplier),
-                                        parse_mode="HTML", reply_markup=rocket_game_kb())
+            await cq.message.edit_text(
+                _rocket_text(amount, new_mult), parse_mode="HTML", reply_markup=rocket_game_kb()
+            )
         except Exception:
             pass
     await cq.answer()
 
-
 @dp.callback_query(RocketState.in_game, F.data == "rocket_cashout")
 async def rocket_cashout(cq: CallbackQuery, state: FSMContext):
-    user_id    = cq.from_user.id
     data       = await state.get_data()
-    amount     = data.get("rocket_amount", 0)
-    multiplier = data.get("rocket_multiplier", 1.0)
+    amount     = data["rocket_amount"]
+    multiplier = data["rocket_multiplier"]
+    payout     = int(amount * multiplier)
+    net_profit = payout - amount
 
-    net_profit = int(amount * multiplier) - amount
-    update_balance(user_id, net_profit, win=True, game_type="rocket")
+    # Если множитель x1.0 — фиксируем как 0 прибыли, но это всё равно победа (не потерял)
+    if net_profit == 0:
+        new_bal = get_balance(cq.from_user.id)
+    else:
+        new_bal = update_balance(cq.from_user.id, net_profit, win=True, game_type="rocket")
+        if new_bal is None:
+            new_bal = get_balance(cq.from_user.id)
+
     await state.clear()
-
     text = (
-        f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> <b>Вы забрали выигрыш!</b>\n\n'
-        f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Множитель: <b>x{multiplier:.2f}</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ставка: <b>{format_chips(amount)}</b>\n'
-        f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> Выигрыш: <b>+{format_chips(net_profit)}</b>\n\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{format_chips(get_balance(user_id))}</b>'
+        f'{E_WIN} <b>Вы забрали выигрыш!</b>\n\n'
+        f'{E_CHART} Множитель: <b>x{multiplier:.2f}</b>\n'
+        f'{E_COIN} Ставка: <b>{format_chips(amount)}</b>\n'
+        f'{E_PARTY} Выигрыш: <b>+{format_chips(net_profit)}</b>\n\n'
+        f'{E_COIN} Новый баланс: <b>{format_chips(new_bal)}</b>'
     )
     await safe_edit_or_send(cq, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Сыграть снова", callback_data="open_rocket",
-                              icon_custom_emoji_id="5373139891223741704")],
-        [InlineKeyboardButton(text="В меню", callback_data="back_main",
-                              icon_custom_emoji_id="5893057118545646106")],
+        [_btn("Сыграть снова", "open_rocket", icon="5373139891223741704")],
+        [_btn("В меню",        "back_main",   icon="5893057118545646106")],
     ]))
     await cq.answer()
 
 
-# ── Minesweeper handlers ──────────────────────────────────────────────────────
-
-def generate_minesweeper_field(size: int = 5, mines: int = 5):
-    field  = [[False]*size for _ in range(size)]
-    placed = 0
-    while placed < mines:
-        r, c = random.randint(0, size-1), random.randint(0, size-1)
-        if not field[r][c]:
-            field[r][c] = True
-            placed += 1
-    return field
-
-def _minesweeper_text(amount: int, field: list, revealed: list, mines: int = 5) -> str:
-    base_mult    = {3: 1.1, 5: 1.3, 7: 2.0, 10: 2.8}.get(mines, 2.0)
-    opened_count = sum(sum(row) for row in revealed)
-    multiplier   = base_mult * (1.0 + opened_count * 0.05)
-    potential    = int(amount * multiplier)
-    text = (
-        f'<tg-emoji emoji-id="5373141891321699086">💣</tg-emoji> <b>Сапер</b>\n\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ставка: <b>{format_chips(amount)}</b>\n'
-        f'<tg-emoji emoji-id="5373141891321699086">💣</tg-emoji> Мин: <b>{mines}</b>\n'
-        f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Множитель: <b>x{multiplier:.2f}</b>\n'
-        f'<tg-emoji emoji-id="5879814368572478751">🏧</tg-emoji> Можно забрать: <b>{format_chips(potential)}</b>\n\n'
-        f'<b>Открывай ячейки:</b>\n'
-    )
-    for row_idx, row in enumerate(revealed):
-        for col_idx, is_revealed in enumerate(row):
-            if is_revealed:
-                text += "💥" if field[row_idx][col_idx] else "✅"
-            else:
-                text += "🟫"
-        text += "\n"
-    return text
-
+# ── Minesweeper ────────────────────────────────────────────────────────────
 
 @dp.callback_query(F.data == "open_minesweeper")
 async def open_minesweeper(cq: CallbackQuery, state: FSMContext):
@@ -2193,51 +1699,47 @@ async def open_minesweeper(cq: CallbackQuery, state: FSMContext):
         await cq.answer("У вас нет фишек! Сбросьте баланс.", show_alert=True)
         return
     await state.set_state(MinesweeperState.choosing_amount)
-    text = (
-        f'<tg-emoji emoji-id="5373141891321699086">💣</tg-emoji> <b>Сапер</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>\n\n'
-        f'Открывай ячейки и не попадись на мину!\n'
-        f'Чем больше ячеек откроешь — тем выше множитель.\n\n'
-        f'<b>Выбери сумму ставки:</b>'
+    await safe_edit_or_send(
+        cq,
+        f'{E_BOMB} <b>Сапёр</b>\n{E_COIN} Баланс: <b>{format_chips(bal)}</b>\n\n'
+        'Открывай ячейки и не попадись на мину!\n'
+        'Чем больше ячеек откроешь — тем выше множитель.\n\n<b>Выбери сумму ставки:</b>',
+        reply_markup=bet_amount_kb(bal, back="back_main"),
     )
-    await safe_edit_or_send(cq, text, reply_markup=bet_amount_kb(bal))
 
+@dp.callback_query(MinesweeperState.choosing_amount, F.data == "amount_custom")
+async def ms_amount_custom(cq: CallbackQuery, state: FSMContext):
+    await state.update_data(waiting_custom=True)
+    bal = get_balance(cq.from_user.id)
+    await safe_edit_or_send(
+        cq,
+        f'{E_PEN} <b>Введите сумму ставки:</b>\n{E_COIN} Баланс: <b>{format_chips(bal)}</b>',
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [_btn("Назад", "back_main", icon="5893057118545646106")]
+        ]),
+    )
 
-@dp.callback_query(MinesweeperState.choosing_amount, F.data.startswith("amount_"), F.data != "amount_custom")
-async def minesweeper_set_amount(cq: CallbackQuery, state: FSMContext):
+@dp.callback_query(MinesweeperState.choosing_amount, F.data.regexp(r"^amount_\d+$"))
+async def ms_set_amount(cq: CallbackQuery, state: FSMContext):
     amount = int(cq.data.replace("amount_", ""))
-    bal    = get_balance(cq.from_user.id)
+    if amount <= 0:
+        await cq.answer("Сумма должна быть больше 0.", show_alert=True)
+        return
+    bal = get_balance(cq.from_user.id)
     if amount > bal:
         await cq.answer("Недостаточно средств!", show_alert=True)
         return
     await state.set_state(MinesweeperState.choosing_mines)
     await state.update_data(minesweeper_amount=amount)
-    text = (
-        f'<tg-emoji emoji-id="5373141891321699086">💣</tg-emoji> <b>Выбери количество мин</b>\n\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ставка: <b>{format_chips(amount)}</b>\n\n'
-        f'Больше мин — выше множитель и больше риск!'
-    )
-    await safe_edit_or_send(cq, text, reply_markup=_minesweeper_mines_kb())
-    await cq.answer()
-
-
-@dp.callback_query(MinesweeperState.choosing_amount, F.data == "amount_custom")
-async def minesweeper_amount_custom_cb(cq: CallbackQuery, state: FSMContext):
-    await state.update_data(waiting_custom=True)
-    bal = get_balance(cq.from_user.id)
     await safe_edit_or_send(
         cq,
-        f'<tg-emoji emoji-id="5870676941614354370">🖋</tg-emoji> <b>Введите сумму ставки:</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Баланс: <b>{format_chips(bal)}</b>',
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Назад", callback_data="back_main",
-                                  icon_custom_emoji_id="5893057118545646106")]
-        ])
+        f'{E_BOMB} <b>Выбери количество мин</b>\n\n{E_COIN} Ставка: <b>{format_chips(amount)}</b>\n\nБольше мин — выше множитель и больше риск!',
+        reply_markup=_minesweeper_mines_kb(),
     )
-
+    await cq.answer()
 
 @dp.message(MinesweeperState.choosing_amount)
-async def minesweeper_custom_amount(msg: Message, state: FSMContext):
+async def ms_custom_amount(msg: Message, state: FSMContext):
     data = await state.get_data()
     if not data.get("waiting_custom"):
         return
@@ -2245,44 +1747,44 @@ async def minesweeper_custom_amount(msg: Message, state: FSMContext):
     try:
         amount = int(msg.text.strip())
         assert 1 <= amount <= bal
-    except:
+    except Exception:
         await msg.answer(f"❗ Введите целое число от <b>1</b> до <b>{bal}</b>.", parse_mode="HTML")
         return
     await state.set_state(MinesweeperState.choosing_mines)
     await state.update_data(minesweeper_amount=amount, waiting_custom=False)
-    text = (
-        f'<tg-emoji emoji-id="5373141891321699086">💣</tg-emoji> <b>Выбери количество мин</b>\n\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ставка: <b>{format_chips(amount)}</b>\n\n'
-        f'Больше мин — выше множитель и больше риск!'
+    await msg.answer(
+        f'{E_BOMB} <b>Выбери количество мин</b>\n\n{E_COIN} Ставка: <b>{format_chips(amount)}</b>\n\nБольше мин — выше множитель и больше риск!',
+        parse_mode="HTML",
+        reply_markup=_minesweeper_mines_kb(),
     )
-    await msg.answer(text, parse_mode="HTML", reply_markup=_minesweeper_mines_kb())
 
-
-@dp.callback_query(MinesweeperState.choosing_mines, F.data.startswith("ms_mines_"))
-async def minesweeper_start_game(cq: CallbackQuery, state: FSMContext):
-    mines_count = int(cq.data.split("_")[-1])
-    data        = await state.get_data()
-    amount      = data.get("minesweeper_amount", 0)
-    field       = generate_minesweeper_field(size=5, mines=mines_count)
-    revealed    = [[False]*5 for _ in range(5)]
+@dp.callback_query(MinesweeperState.choosing_mines, F.data.regexp(r"^ms_mines_\d+$"))
+async def ms_start_game(cq: CallbackQuery, state: FSMContext):
+    mines  = int(cq.data.split("_")[-1])
+    data   = await state.get_data()
+    amount = data["minesweeper_amount"]
+    field    = generate_minesweeper_field(size=5, mines=mines)
+    revealed = [[False] * 5 for _ in range(5)]
     await state.set_state(MinesweeperState.in_game)
     await state.update_data(minesweeper_field=field, minesweeper_revealed=revealed,
-                             minesweeper_mines=mines_count)
-    text = _minesweeper_text(amount, field, revealed, mines_count)
-    await safe_edit_or_send(cq, text, reply_markup=_minesweeper_kb(revealed))
+                             minesweeper_mines=mines)
+    await safe_edit_or_send(
+        cq,
+        _minesweeper_text(amount, field, revealed, mines),
+        reply_markup=_minesweeper_kb(revealed),
+    )
     await cq.answer()
 
-
-@dp.callback_query(MinesweeperState.in_game, F.data.startswith("ms_cell_"))
-async def minesweeper_open_cell(cq: CallbackQuery, state: FSMContext):
-    user_id  = cq.from_user.id
+@dp.callback_query(MinesweeperState.in_game, F.data.regexp(r"^ms_cell_\d+_\d+$"))
+async def ms_open_cell(cq: CallbackQuery, state: FSMContext):
+    uid      = cq.from_user.id
     parts    = cq.data.split("_")
     row, col = int(parts[2]), int(parts[3])
     data     = await state.get_data()
-    field       = data.get("minesweeper_field", [])
-    revealed    = data.get("minesweeper_revealed", [])
-    amount      = data.get("minesweeper_amount", 0)
-    mines_count = data.get("minesweeper_mines", 5)
+    field    = data["minesweeper_field"]
+    revealed = data["minesweeper_revealed"]
+    amount   = data["minesweeper_amount"]
+    mines    = data["minesweeper_mines"]
 
     if revealed[row][col]:
         await cq.answer("Эта ячейка уже открыта!", show_alert=False)
@@ -2290,63 +1792,278 @@ async def minesweeper_open_cell(cq: CallbackQuery, state: FSMContext):
 
     revealed[row][col] = True
 
-    if field[row][col]:
-        update_balance(user_id, -amount, win=False, game_type="minesweeper")
+    if field[row][col]:  # МИНА
+        new_bal = update_balance(uid, -amount, win=False, game_type="minesweeper")
+        if new_bal is None:
+            new_bal = get_balance(uid)
         await state.clear()
         text = (
-            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> <b>МИНА!</b>\n\n'
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ставка: <b>{format_chips(amount)}</b>\n'
-            f'<tg-emoji emoji-id="5870657884844462243">❌</tg-emoji> Вы потеряли: <b>-{format_chips(amount)}</b>\n\n'
-            f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{format_chips(get_balance(user_id))}</b>'
+            f'{E_LOSE} <b>МИНА!</b>\n\n'
+            f'{E_COIN} Ставка: <b>{format_chips(amount)}</b>\n'
+            f'{E_LOSE} Потеряно: <b>-{format_chips(amount)}</b>\n\n'
+            f'{E_COIN} Новый баланс: <b>{format_chips(new_bal)}</b>'
         )
+        if new_bal <= 0:
+            text += f'\n\n{E_LOSE} <b>Вы банкрот!</b> Нажмите «Сбросить баланс».'
         await safe_edit_or_send(cq, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Сыграть снова", callback_data="open_minesweeper",
-                                  icon_custom_emoji_id="5373141891321699086")],
-            [InlineKeyboardButton(text="В меню", callback_data="back_main",
-                                  icon_custom_emoji_id="5893057118545646106")],
+            [_btn("Сыграть снова", "open_minesweeper", icon="5373141891321699086")],
+            [_btn("В меню",        "back_main",         icon="5893057118545646106")],
+            *([[_btn("Сбросить баланс", "reset", icon="5345906554510012647")]] if new_bal <= 0 else []),
         ]))
     else:
         await state.update_data(minesweeper_revealed=revealed)
-        text = _minesweeper_text(amount, field, revealed, mines_count)
         try:
-            await cq.message.edit_text(text, parse_mode="HTML", reply_markup=_minesweeper_kb(revealed))
+            await cq.message.edit_text(
+                _minesweeper_text(amount, field, revealed, mines),
+                parse_mode="HTML",
+                reply_markup=_minesweeper_kb(revealed),
+            )
         except Exception:
             pass
     await cq.answer()
 
-
 @dp.callback_query(MinesweeperState.in_game, F.data == "ms_cashout")
-async def minesweeper_cashout(cq: CallbackQuery, state: FSMContext):
-    user_id  = cq.from_user.id
+async def ms_cashout(cq: CallbackQuery, state: FSMContext):
+    uid      = cq.from_user.id
     data     = await state.get_data()
-    amount      = data.get("minesweeper_amount", 0)
-    revealed    = data.get("minesweeper_revealed", [])
-    mines_count = data.get("minesweeper_mines", 5)
-    opened_count = sum(sum(row) for row in revealed)
-    base_mult    = {3: 1.1, 5: 1.3, 7: 2.0, 10: 2.8}.get(mines_count, 2.0)
-    multiplier   = base_mult * (1.0 + opened_count * 0.05)
-    net_profit   = int(amount * multiplier) - amount
+    amount   = data["minesweeper_amount"]
+    revealed = data["minesweeper_revealed"]
+    mines    = data["minesweeper_mines"]
+    opened   = sum(sum(row) for row in revealed)
+    base     = {3: 1.1, 5: 1.3, 7: 2.0, 10: 2.8}.get(mines, 2.0)
+    mult     = base * (1.0 + opened * 0.05)
+    profit   = int(amount * mult) - amount
 
-    update_balance(user_id, net_profit, win=True, game_type="minesweeper")
+    if profit == 0:
+        new_bal = get_balance(uid)
+    else:
+        new_bal = update_balance(uid, profit, win=True, game_type="minesweeper")
+        if new_bal is None:
+            new_bal = get_balance(uid)
+
     await state.clear()
     text = (
-        f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> <b>Вы забрали выигрыш!</b>\n\n'
-        f'<tg-emoji emoji-id="5870633910337015697">✅</tg-emoji> Открыто ячеек: <b>{opened_count}</b>\n'
-        f'<tg-emoji emoji-id="5870930636742595124">📊</tg-emoji> Множитель: <b>x{multiplier:.2f}</b>\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Ставка: <b>{format_chips(amount)}</b>\n'
-        f'<tg-emoji emoji-id="6041731551845159060">🎉</tg-emoji> Выигрыш: <b>+{format_chips(net_profit)}</b>\n\n'
-        f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Новый баланс: <b>{format_chips(get_balance(user_id))}</b>'
+        f'{E_WIN} <b>Вы забрали выигрыш!</b>\n\n'
+        f'{E_WIN} Открыто ячеек: <b>{opened}</b>\n'
+        f'{E_CHART} Множитель: <b>x{mult:.2f}</b>\n'
+        f'{E_COIN} Ставка: <b>{format_chips(amount)}</b>\n'
+        f'{E_PARTY} Выигрыш: <b>+{format_chips(profit)}</b>\n\n'
+        f'{E_COIN} Новый баланс: <b>{format_chips(new_bal)}</b>'
     )
     await safe_edit_or_send(cq, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Сыграть снова", callback_data="open_minesweeper",
-                              icon_custom_emoji_id="5373141891321699086")],
-        [InlineKeyboardButton(text="В меню", callback_data="back_main",
-                              icon_custom_emoji_id="5893057118545646106")],
+        [_btn("Сыграть снова", "open_minesweeper", icon="5373141891321699086")],
+        [_btn("В меню",        "back_main",         icon="5893057118545646106")],
     ]))
     await cq.answer()
 
 
-# ── Background tasks ──────────────────────────────────────────────────────────
+# ── Admin ──────────────────────────────────────────────────────────────────
+
+@dp.message(Command("admin"))
+async def cmd_admin(msg: Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID:
+        await msg.answer(f'{E_LOSE} У вас нет доступа к админ-панели', parse_mode="HTML")
+        return
+    await state.set_state(AdminState.choosing_action)
+    await msg.answer(
+        f'{E_GEAR} <b>Админ-панель</b>\n\nВыберите действие:',
+        parse_mode="HTML",
+        reply_markup=admin_menu_kb(),
+    )
+
+@dp.callback_query(F.data == "admin_users")
+async def show_users_list(cq: CallbackQuery, state: FSMContext):
+    if cq.from_user.id != ADMIN_ID:
+        await cq.answer("Только для админа.", show_alert=True)
+        return
+    await state.set_state(AdminState.choosing_user)
+    users = get_all_users_full()
+    await safe_edit_or_send(
+        cq,
+        f'{E_USERS} <b>Список пользователей:</b>\n\nВсего: {len(users)}\n\nВыберите для редактирования:',
+        reply_markup=users_list_kb(users, 0),
+    )
+
+@dp.callback_query(F.data.regexp(r"^admin_users_page_\d+$"))
+async def paginate_users(cq: CallbackQuery):
+    if cq.from_user.id != ADMIN_ID:
+        return
+    page  = int(cq.data.split("_")[-1])
+    users = get_all_users_full()
+    await safe_edit_or_send(
+        cq,
+        f'{E_USERS} <b>Список пользователей:</b>\n\nВсего: {len(users)}\n\nВыберите для редактирования:',
+        reply_markup=users_list_kb(users, page),
+    )
+
+@dp.callback_query(F.data.regexp(r"^admin_edit_user_\d+$"))
+async def edit_user_menu(cq: CallbackQuery, state: FSMContext):
+    if cq.from_user.id != ADMIN_ID:
+        return
+    uid  = int(cq.data.split("_")[-1])
+    user = get_user(uid)
+    if not user:
+        await cq.answer("Пользователь не найден.", show_alert=True)
+        return
+    text = (
+        f'{E_USER} <b>Профиль пользователя:</b>\n\n'
+        f'ID: <code>{uid}</code>\n'
+        f'Имя: <b>{html.escape(user["username"] or "Неизвестно")}</b>\n'
+        f'{E_COIN} Баланс: <b>{format_chips(user["balance"])}</b>\n'
+        f'{E_WIN} Побед: <b>{user["wins"]}</b>\n'
+        f'{E_LOSE} Поражений: <b>{user["losses"]}</b>\n\n'
+        f'Выберите действие:'
+    )
+    await state.update_data(admin_user_id=uid)
+    await safe_edit_or_send(cq, text, reply_markup=edit_user_kb(uid))
+
+@dp.callback_query(F.data.regexp(r"^admin_user_history_\d+$"))
+async def admin_user_history(cq: CallbackQuery):
+    if cq.from_user.id != ADMIN_ID:
+        return
+    uid  = int(cq.data.split("_")[-1])
+    user = get_user(uid)
+    if not user:
+        await cq.answer("Пользователь не найден.", show_alert=True)
+        return
+    await safe_edit_or_send(
+        cq,
+        history_text(uid),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [_btn("Назад к пользователю", f"admin_edit_user_{uid}", icon="5893057118545646106")],
+        ]),
+    )
+
+@dp.callback_query(F.data.regexp(r"^admin_edit_balance_\d+$"))
+async def ask_new_balance(cq: CallbackQuery, state: FSMContext):
+    if cq.from_user.id != ADMIN_ID:
+        return
+    uid = int(cq.data.split("_")[-1])
+    await state.update_data(admin_user_id=uid)
+    await state.set_state(AdminState.editing_balance)
+    await safe_edit_or_send(
+        cq,
+        f'{E_COIN} Текущий баланс: <b>{format_chips(get_balance(uid))}</b>\n\nВведите сумму, которую хотите <b>добавить</b>:',
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [_btn("Назад", "admin_users_back", icon="5893057118545646106")]
+        ]),
+    )
+
+@dp.message(AdminState.editing_balance)
+async def process_new_balance(msg: Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID:
+        return
+    try:
+        add_amount = int(msg.text.strip())
+        assert add_amount >= 0
+    except Exception:
+        await msg.answer(f'{E_LOSE} Введите корректное неотрицательное число.', parse_mode="HTML")
+        return
+    data    = await state.get_data()
+    uid     = data["admin_user_id"]
+    old_bal = get_balance(uid)
+    new_bal = old_bal + add_amount
+    set_balance(uid, new_bal)
+    add_history(uid, add_amount, True, game_type="admin_topup")
+    user = get_user(uid)
+    await state.clear()
+    await msg.answer(
+        f'{E_WIN} <b>Баланс обновлён!</b>\n\n'
+        f'{E_USER} Пользователь: <b>{html.escape(user["username"] or "Неизвестно")}</b> (ID: {uid})\n'
+        f'{E_COIN} Было: <b>{format_chips(old_bal)}</b>\n'
+        f'{E_COIN2} Добавлено: <b>+{format_chips(add_amount)}</b>\n'
+        f'{E_WIN} Итого: <b>{format_chips(new_bal)}</b>',
+        parse_mode="HTML",
+        reply_markup=admin_menu_kb(),
+    )
+    try:
+        await bot.send_message(
+            uid,
+            f'{E_COIN} <b>Баланс пополнен!</b>\n\n'
+            f'{E_COIN2} Добавлено: <b>+{format_chips(add_amount)}</b>\n'
+            f'{E_WIN} Текущий баланс: <b>{format_chips(new_bal)}</b>',
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+@dp.callback_query(F.data == "admin_broadcast")
+async def broadcast_menu(cq: CallbackQuery, state: FSMContext):
+    if cq.from_user.id != ADMIN_ID:
+        await cq.answer("Только для админа.", show_alert=True)
+        return
+    users = get_all_users_full()
+    await state.set_state(AdminState.sending_broadcast)
+    await safe_edit_or_send(
+        cq,
+        f'{E_HORN} <b>Рассылка сообщений</b>\n\nАдресатов: {len(users)}\n\n'
+        'Введите сообщение для всех пользователей.\n<i>Поддерживает HTML форматирование.</i>',
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [_btn("Отмена", "admin_back", icon="5870657884844462243")]
+        ]),
+    )
+
+@dp.message(AdminState.sending_broadcast)
+async def process_broadcast(msg: Message, state: FSMContext):
+    if msg.from_user.id != ADMIN_ID:
+        return
+    # Экранируем только если текст не содержит намеренных HTML-тегов
+    broadcast_text = msg.text or ""
+    users   = get_all_users_full()
+    ok = fail = 0
+    for u in users:
+        try:
+            await bot.send_message(u["user_id"], broadcast_text, parse_mode="HTML")
+            ok += 1
+        except Exception:
+            fail += 1
+    await state.clear()
+    await msg.answer(
+        f'{E_WIN} <b>Рассылка завершена!</b>\n\nУспешно: <b>{ok}</b>\nОшибок: <b>{fail}</b>',
+        parse_mode="HTML",
+        reply_markup=admin_menu_kb(),
+    )
+
+@dp.callback_query(F.data == "admin_back")
+async def admin_back_to_menu(cq: CallbackQuery, state: FSMContext):
+    if cq.from_user.id != ADMIN_ID:
+        return
+    await state.clear()
+    await state.set_state(AdminState.choosing_action)
+    await safe_edit_or_send(
+        cq,
+        f'{E_GEAR} <b>Админ-панель</b>\n\nВыберите действие:',
+        reply_markup=admin_menu_kb(),
+    )
+
+@dp.callback_query(F.data == "admin_clear_history")
+async def admin_clear_history(cq: CallbackQuery):
+    if cq.from_user.id != ADMIN_ID:
+        return
+    clear_all_history()
+    await safe_edit_or_send(
+        cq,
+        f'{E_WIN} <b>История ставок очищена!</b>',
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [_btn("Назад в админ-панель", "admin_back", icon="5893057118545646106")]
+        ]),
+    )
+    await cq.answer("История очищена.", show_alert=True)
+
+@dp.callback_query(F.data == "admin_users_back")
+async def admin_back_to_users(cq: CallbackQuery, state: FSMContext):
+    if cq.from_user.id != ADMIN_ID:
+        return
+    await state.set_state(AdminState.choosing_user)
+    users = get_all_users_full()
+    await safe_edit_or_send(
+        cq,
+        f'{E_USERS} <b>Список пользователей:</b>\n\nВсего: {len(users)}\n\nВыберите для редактирования:',
+        reply_markup=users_list_kb(users, 0),
+    )
+
+
+# ── Background tasks ───────────────────────────────────────────────────────
 
 async def daily_bonus_task():
     msk = pytz.timezone("Europe/Moscow")
@@ -2356,25 +2073,24 @@ async def daily_bonus_task():
         if now >= target:
             target += timedelta(days=1)
         await asyncio.sleep((target - now).total_seconds())
-
-        for user_id in get_all_users():
-            add_daily_bonus(user_id)
-            new_bal = get_balance(user_id)
+        for uid in get_all_users():
+            add_daily_bonus(uid)
+            new_bal = get_balance(uid)
             try:
                 await bot.send_message(
-                    user_id,
-                    f'<tg-emoji emoji-id="6032644646587338669">🎁</tg-emoji> <b>Ежедневный бонус!</b>\n\n'
-                    f'<tg-emoji emoji-id="5890848474563352982">🪙</tg-emoji> Вам начислено <b>+10000 фишек</b>\n'
-                    f'<tg-emoji emoji-id="5904462880941545555">🪙</tg-emoji> Текущий баланс: <b>{format_chips(new_bal)}</b>\n\n'
+                    uid,
+                    f'{E_GIFT} <b>Ежедневный бонус!</b>\n\n'
+                    f'{E_COIN2} Начислено <b>+10 000 фишек</b>\n'
+                    f'{E_COIN} Текущий баланс: <b>{format_chips(new_bal)}</b>\n\n'
                     f'<i>Удачной игры!</i>',
-                    parse_mode="HTML"
+                    parse_mode="HTML",
                 )
             except Exception:
                 pass
         await asyncio.sleep(60)
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Main ───────────────────────────────────────────────────────────────────
 
 async def main():
     init_db()
@@ -2386,7 +2102,7 @@ async def main():
         global db_pool
         if db_pool is not None:
             db_pool.closeall()
-            print("🗄️ Database connection pool closed")
+            print("🗄 Database connection pool closed.")
 
 if __name__ == "__main__":
     try:
