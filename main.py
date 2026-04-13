@@ -767,7 +767,8 @@ def _minesweeper_mines_kb() -> InlineKeyboardMarkup:
         [_btn("Назад", "back_main", icon="5893057118545646106")],
     ])
 
-def _minesweeper_kb(revealed: list) -> InlineKeyboardMarkup:
+def _minesweeper_kb(revealed: list, opened_count: int) -> InlineKeyboardMarkup:
+    """Кнопка «Забрать» показывается только если открыта хотя бы одна ячейка."""
     buttons = []
     for r, row in enumerate(revealed):
         buttons.append([
@@ -777,7 +778,8 @@ def _minesweeper_kb(revealed: list) -> InlineKeyboardMarkup:
             )
             for c in range(5)
         ])
-    buttons.append([_btn("Забрать", "ms_cashout", icon="5870633910337015697")])
+    if opened_count > 0:
+        buttons.append([_btn("Забрать", "ms_cashout", icon="5870633910337015697")])
     buttons.append([_btn("В меню",  "back_main",  icon="5893057118545646106")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -850,6 +852,7 @@ def farm_kb(user_id: int) -> InlineKeyboardMarkup:
             rows.append([_btn(f"Нужно {fmt(cost)} для улучшения", "farm_noop")])
     rows.append([_btn("Назад", "back_main", icon="5893057118545646106")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
 
 # ── Business keyboards ─────────────────────────────────────────────────────
 
@@ -1051,6 +1054,8 @@ def _minesweeper_text(amount: int, field: list, revealed: list, mines: int) -> s
             else:
                 row_str += "🟫"
         lines.append(row_str)
+    if opened_count == 0:
+        lines.append(f'\n<i>Открой хотя бы одну ячейку, чтобы забрать выигрыш</i>')
     return "\n".join(lines)
 
 
@@ -1459,8 +1464,6 @@ async def biz_buy(cq: CallbackQuery):
         business_detail_text(biz_type, owned_row),
         reply_markup=business_detail_kb(biz_type, True, 0),
     )
-
-# ── ИСПРАВЛЕНИЕ: biz_collect_all ДОЛЖЕН быть ВЫШЕ biz_collect ──────────────
 
 @dp.callback_query(F.data == "biz_collect_all")
 async def biz_collect_all(cq: CallbackQuery):
@@ -2049,13 +2052,14 @@ async def ms_start_game(cq: CallbackQuery, state: FSMContext):
     amount   = data["minesweeper_amount"]
     field    = generate_minesweeper_field(size=5, mines=mines)
     revealed = [[False] * 5 for _ in range(5)]
+    opened   = 0
     await state.set_state(MinesweeperState.in_game)
     await state.update_data(minesweeper_field=field, minesweeper_revealed=revealed,
                              minesweeper_mines=mines)
     await safe_edit_or_send(
         cq,
         _minesweeper_text(amount, field, revealed, mines),
-        reply_markup=_minesweeper_kb(revealed),
+        reply_markup=_minesweeper_kb(revealed, opened),
     )
     await cq.answer()
 
@@ -2075,8 +2079,10 @@ async def ms_open_cell(cq: CallbackQuery, state: FSMContext):
         return
 
     revealed[row][col] = True
+    opened = sum(sum(r) for r in revealed)
 
     if field[row][col]:
+        # Попал на мину
         new_bal = update_balance(uid, -amount, win=False, game_type="minesweeper")
         if new_bal is None:
             new_bal = get_balance(uid)
@@ -2100,7 +2106,7 @@ async def ms_open_cell(cq: CallbackQuery, state: FSMContext):
             await cq.message.edit_text(
                 _minesweeper_text(amount, field, revealed, mines),
                 parse_mode="HTML",
-                reply_markup=_minesweeper_kb(revealed),
+                reply_markup=_minesweeper_kb(revealed, opened),
             )
         except Exception:
             pass
@@ -2114,9 +2120,15 @@ async def ms_cashout(cq: CallbackQuery, state: FSMContext):
     revealed = data["minesweeper_revealed"]
     mines    = data["minesweeper_mines"]
     opened   = sum(sum(row) for row in revealed)
-    base     = {3: 1.1, 5: 1.3, 7: 2.0, 10: 2.8}.get(mines, 2.0)
-    mult     = base * (1.0 + opened * 0.05)
-    profit   = int(amount * mult) - amount
+
+    # Защита: нельзя забрать без открытых ячеек
+    if opened == 0:
+        await cq.answer("Сначала открой хотя бы одну ячейку!", show_alert=True)
+        return
+
+    base   = {3: 1.1, 5: 1.3, 7: 2.0, 10: 2.8}.get(mines, 2.0)
+    mult   = base * (1.0 + opened * 0.05)
+    profit = int(amount * mult) - amount
 
     if profit == 0:
         new_bal = get_balance(uid)
