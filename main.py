@@ -506,6 +506,12 @@ def noun_form(count: int, singular: str, gen24: str, gen5: str) -> str:
     return gen5
 
 def fmt(n: int) -> str:
+    if n >= 1_000_000_000_000:
+        v = n / 1_000_000_000_000
+        return (f"{int(v)}кккк" if v == int(v) else f"{v:.1f}".rstrip("0").rstrip(".") + "кккк")
+    if n >= 1_000_000_000:
+        v = n / 1_000_000_000
+        return (f"{int(v)}ккк" if v == int(v) else f"{v:.1f}".rstrip("0").rstrip(".") + "ккк")
     if n >= 1_000_000:
         v = n / 1_000_000
         return (f"{int(v)}кк" if v == int(v) else f"{v:.1f}".rstrip("0").rstrip(".") + "кк")
